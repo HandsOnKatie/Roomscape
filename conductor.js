@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /* ===================================================================
-   The Immersion Engine — Conductor backend  v4.24 (community scaffold v0.10)
+   Roomscape — Conductor backend  v4.34 (community release v0.20)
+   v4.34: config.json loader (layout/ha/rooms/edges/atRestMode, legacy fallback),
+          music-token redaction on all profile-serving endpoints, superseded
+          ROOMS phase blocks removed (-657 lines), engine.js legacy trim.
    Zero-dependency Node server (built-in http + crypto only).
    - serves the web app + the "Images & Videos" media folder
    - scans the media folder and assigns REAL images to each frame per mode
@@ -1341,7 +1344,7 @@ resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chrom
 setTimeout(directorOnModeChange, 2000);   // v1.2: start the current mode's audio director after boot
 server.listen(PORT, () => {
   console.log('====================================================');
-  console.log('  RoomScape Conductor  v4.24');
+  console.log('  Roomscape Conductor  v4.34 (community v0.20)');
   console.log('  modules : ' + LIB_MODULES.join(', ') + '  (conductor-lib @ ' + LIB_DIR + ')');
   console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — app.html missing, serving control.html') + ')');
   console.log('  app   : ' + APP_DIR);

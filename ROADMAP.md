@@ -8,11 +8,12 @@
 - Repo skeleton: docs, MIT licence, security model, Docker packaging, generic kiosk deploy kit.
 - Theme-pack **format v1 specified** (docs/THEMES.md).
 
-## Phase 1 — Separation (target v0.2x)
-- `config.json` (layout, HA entities, zones, rooms, at-rest mode) split out of `profiles.json`; legacy fallback kept.
-- Remove the legacy built-in board-game entries from `app/engine.js` (GAMES/MODES lists still name commercial titles and reference reference-install scene keys; harmless — frames fall back gracefully — but they should go with the config split).
-- Strip `settings.music` from all profile-serving endpoints.
-- Collapse the 7 superseded ROOMS PHASE blocks; port remaining route blocks to the central router (`modules/`).
+## Phase 1 — Separation ✅ DONE in v0.20
+- ✅ `config.json` split out of `profiles.json` (layout/ha/rooms/edges/atRestMode); legacy fallback kept.
+- ✅ Legacy built-in board-game entries removed from `engine.js`.
+- ✅ Music token stripped/redacted on all profile-serving endpoints; secrets env-only.
+- ✅ Superseded ROOMS PHASE blocks removed (−657 lines), runtime-verified dead; smoke harness added.
+- ➡ Carried to Phase 2: port remaining route blocks to the central router (`modules/`); delete the dead ASSET UPLOAD + RULES & SCORES blocks and **re-implement `POST /api/upload` via the router** (it is currently dead at runtime — pre-existing bug found during the collapse).
 
 ## Phase 2 — Portability (target v0.3x–0.4x)
 - Finish N-frame layout: derive panorama math from layout (kill `%3` / two-wall assumptions), generate wall hosts, single frame-id source.
