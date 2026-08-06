@@ -1,5 +1,12 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.63
+   RoomScape — Play & Design app (app.js)  v3.73
+   v3.73 (Phase 4a, RS-AUTH): admin-token plumbing — window.fetch is wrapped
+   ONCE (just after the api/post helpers, before any appended block runs) so
+   every non-GET call in the file (shared post()/api()/jpost() helpers AND
+   one-off fetches) carries x-rs-token from localStorage('rs-admin-token');
+   a 401 {error:'auth'} prompts once via askText, stores the token, retries
+   that call once; ⚙ Settings → System gains "🔑 Admin token…" to (re)enter
+   or rotate the stored token.
    v3.63 (Phase 3c, RS-THEMES-UI): theme packs land in the app —
    (a) Play cards whose id is namespaced (pack.mode) carry a small 🧩 badge
    (title = pack id); (b) ⚙ Settings → System grows a "🧩 Theme packs" button
@@ -544,6 +551,51 @@
   function opt(list, cur) { return list.map(function (o) { var v = o.v != null ? o.v : o, l = o.l != null ? o.l : o; return '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + l + '</option>'; }).join(''); }
   function api(p, opts) { return fetch(p, opts).then(function (r) { if (r.ok) return r.json(); return r.text().then(function (t) { var m = t; try { m = (JSON.parse(t).error) || t; } catch (e) {} try { window.dispatchEvent(new CustomEvent('rs-api-error', { detail: { path: p, status: r.status, msg: String(m).slice(0, 300) } })); } catch (e) {} var err = new Error(String(m).slice(0, 300)); err.status = r.status; throw err; }); }); } /* rs-harden api v1 */
   function post(p, body) { return api(p, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { method: 'POST' }); }
+  /* ---- RS-AUTH v1 (Phase 4a): admin-token plumbing ----
+     The conductor 401s any non-GET without x-rs-token (SECURITY.md). ONE choke
+     point: window.fetch is wrapped so the shared helpers here, the appended
+     blocks' own jpost/post copies AND every one-off fetch all carry the token.
+     On a 401 {error:'auth'}: prompt once (askText), store, retry that call
+     once. Wrapped at main-IIFE eval time — before any appended block runs — so
+     every later `fetch` reference resolves to the wrapper. All call sites use
+     plain header objects (no Headers instances), so Object.assign merging is
+     safe. */
+  var RS_TOK_KEY = 'rs-admin-token';
+  function adminTok() { try { return localStorage.getItem(RS_TOK_KEY) || ''; } catch (e) { return ''; } }
+  function setAdminTok(v) { try { localStorage.setItem(RS_TOK_KEY, v); } catch (e) {} }
+  var askingTok = null;   // concurrent 401s share one prompt
+  function promptAdminTok() {
+    if (askingTok) return askingTok;
+    askingTok = new Promise(function (resolve) {
+      var done = false;
+      function fin(v) { if (done) return; done = true; askingTok = null; resolve(v || ''); }
+      try {
+        askText('Admin token?', 'Printed in the server log / data/admin-token', adminTok(), function (v) { var t = String(v || '').trim(); if (t) setAdminTok(t); fin(t); });
+        // askText has no cancel callback — resolve '' once the dialog is gone
+        var iv = setInterval(function () { if (done || !D.getElementById('rsask')) { clearInterval(iv); fin(''); } }, 400);
+      } catch (e) { fin(''); }
+    });
+    return askingTok;
+  }
+  var realFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    var m = String((init && init.method) || 'GET').toUpperCase();
+    if (m === 'GET' || m === 'HEAD') return realFetch(input, init);
+    function withTok(base) {
+      var t = adminTok(); if (!t) return base;
+      var i2 = Object.assign({}, base || {});
+      i2.headers = Object.assign({}, (base && base.headers) || {});
+      i2.headers['x-rs-token'] = t;
+      return i2;
+    }
+    return realFetch(input, withTok(init)).then(function (r) {
+      if (r.status !== 401) return r;
+      return r.clone().json().catch(function () { return null; }).then(function (j) {
+        if (!j || j.error !== 'auth') return r;
+        return promptAdminTok().then(function (t) { return t ? realFetch(input, withTok(init)) : r; });   // one retry
+      });
+    });
+  };
   /* v2.64: per-frame arrays pad to layout.frames.length (from /api/layout) — no
      hardcoded 6s. On-disk profiles stay length-6 today because that IS the layout. */
   function padArr(a, n, fill) { a = Array.isArray(a) ? a.slice(0, n) : []; while (a.length < n) a.push(fill !== undefined ? fill : null); return a; }
@@ -4855,6 +4907,7 @@
       + '<button class="btn" id="greload">↻ Reload all frames</button>'
       + '<button class="btn" id="grestart">⟳ Restart Conductor</button>'
       + '<button class="btn" id="gthemes">🧩 Theme packs</button>'   /* Phase 3c */
+      + '<button class="btn" id="gadmtok">🔑 Admin token…</button>'   /* Phase 4a, RS-AUTH */
       + '<a class="btn gh" href="wall-test.html" target="_blank">Wall test ↗</a>'
       + '<a class="btn gh" href="api/health" target="_blank">Health ↗</a></div>'
       + '<div class="hint" style="margin-top:10px">Home Assistant: ' + (haRoom.configured ? 'connected' : 'not configured — see HA-SETUP.md') + ' · Conductor v' + ((health && health.version) || '?') + '</div></div>'
@@ -4892,6 +4945,7 @@
     var esa = $('#edgesyncall'); if (esa) esa.onclick = function () { syncEdge(null); };
     var eca = $('#edgecleanall'); if (eca) eca.onclick = function () { cleanEdge(null); };
     $('#gthemes').onclick = openThemesSheet;   /* Phase 3c */
+    var gat = $('#gadmtok'); if (gat) gat.onclick = function () { askText('Admin token?', 'Printed in the server log / data/admin-token', adminTok(), function (v) { setAdminTok(String(v).trim()); toast('🔑 Admin token saved'); }); };   /* Phase 4a, RS-AUTH */
     $('#grescan').onclick = function () { post('/api/rescan').then(function () { toast('Rescanning…'); return boot2(); }); };
     $('#gposters').onclick = function () { makeVideoPosters(); };
     $('#greload').onclick = function () { post('/api/reload', { frame: 'all' }).then(function (j) { toast('↻ Reload sent (' + j.clients + ' clients)'); }); };

@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v4.64 (community release v0.32)
+   Roomscape — Conductor backend  v4.74 (community release v0.50)
+   v4.74 (Phase 4a): RS-AUTH v1 — admin-token gate on every mutating request
+          (env ADMIN_TOKEN > data/admin-token > generated on first run; the
+          gate is a chain-capture wrapper appended LAST so unauthorized
+          requests never reach a handler; POST /api/tag/* exempt while
+          auth.tagOpen, WS upgrades untouched, auth.enabled:false kill-switch).
+          CORS is config-driven (CONFIG.cors: '*' | allow-list | absent = no
+          ACAO header) through the single corsHdr() choke point. Phase-4b
+          wizard endpoints: GET /api/ha/entities?domain= (the one token-gated
+          GET) and POST /api/config (whitelisted deep-merge + timestamped .bak
+          + live LAYOUT/at-rest re-derive). See SECURITY.md.
    v4.64 (Phase 3b): RS-THEME-ZIP — theme export/import over zip, zero deps
           (conductor-lib/zip.js, node zlib). GET /api/theme/export/<pack>
           downloads <pack>.roomscape-theme.zip (pack folder as-is, entries
@@ -616,11 +626,31 @@ const HA_DOMAINS = { media_player: 1, light: 1, scene: 1, remote: 1, switch: 1 }
    identifiers so all core code and every appended patch block keep working
    unchanged. None of these is ever reassigned (reassigned functions were
    deliberately NOT extracted), hence const. */
+/* RS-AUTH v1 (Phase 4a): config-driven CORS — the ONE policy point every
+   response-header site routes through (the per-block literal '*' headers are
+   all rewritten to corsHdr(req, {...})). CONFIG.cors:
+     '*'                -> Access-Control-Allow-Origin: * (legacy wide-open)
+     string | [strings] -> echo the request Origin when allow-listed
+     absent (default)   -> NO ACAO header at all — same-origin pages (the app,
+                           frames, kiosks served by this conductor) are
+                           unaffected; cross-origin browser reads are blocked.
+   Read at call time so POST /api/config {cors} applies live. */
+function corsOrigin(req) {
+  var c = CONFIG.cors;
+  if (c === '*') return '*';
+  if (!c) return null;
+  var o = req && req.headers && req.headers.origin;
+  if (!o) return null;
+  return (Array.isArray(c) ? c : [c]).indexOf(o) >= 0 ? o : null;
+}
+function corsHdr(req, h) { var o = corsOrigin(req); if (o) { h['Access-Control-Allow-Origin'] = o; if (o !== '*') h['Vary'] = 'Origin'; } return h; }
+
 const ctx = {
   // config values (stable consts)
   MEDIA_DIR, OVERLAY_DIR, PHOTOS_DIR, THUMB_DIR, THEMES_DIR,   // RS-THEMES v1: media.js themeSafe containment root
   IMG_RE, VID_RE, MEDIA_RE, OVL_RE,
   WS_GUID, HA_URL, HA_TOKEN, DEFAULT_SETTINGS,
+  corsHdr,                                   // RS-AUTH v1: media.js serves files under the same CORS policy
   // stable references
   clients,                                   // the one WS client Set (harden block heartbeats the same Set)
   // shared mutable accessors — read at call time, never captured
@@ -898,7 +928,7 @@ function haApplyRoom() {                                  // mode/game changes d
 
 /* -------------------- HTTP (media + static + REST) -------------------- */
 /* v3.62: MIME + serveFile moved to conductor-lib/media.js (imported above) */
-function sendJSON(res, code, obj) { const b = Buffer.from(JSON.stringify(obj)); res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Content-Length': b.length }); res.end(b); }
+function sendJSON(res, code, obj) { const b = Buffer.from(JSON.stringify(obj)); res.writeHead(code, corsHdr(res.req, { 'Content-Type': 'application/json', 'Content-Length': b.length })); res.end(b); }   /* RS-AUTH v1: CORS via corsHdr */
 function readBody(req, cb) { let s = ''; req.on('data', (c) => { s += c; if (s.length > 2e6) req.destroy(); }); req.on('end', () => { let j = null; try { j = JSON.parse(s || '{}'); } catch (e) {} cb(j); }); }
 /* v3.62: listPhotos/photoSafe moved to conductor-lib/media.js (imported
    above). photoAlbums + its cache stay here (only core + v262 use them). */
@@ -943,7 +973,7 @@ const server = http.createServer((req, res) => {
 });
 function coreHandler(req, res) {
   const u = new URL(req.url, 'http://localhost'); const p = u.pathname;
-  if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); res.end(); return; }
+  if (req.method === 'OPTIONS') { res.writeHead(204, corsHdr(req, { 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type,x-rs-token' })); res.end(); return; }   /* RS-AUTH v1: preflight follows CONFIG.cors; x-rs-token allowed */
 
   if (p.startsWith('/media/')) {
     const relM = decodeURIComponent(p.slice(7));
@@ -1004,7 +1034,7 @@ function coreHandler(req, res) {
   }
 
   if (p.startsWith('/api/')) {
-    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '4.64', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
+    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '4.74', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
     if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST });   // v2.62: wall shape, single source of truth · RS-CONFIG v1: roles/orientation/atRest
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, state);
     if (p === '/api/scenes') return sendJSON(res, 200, { count: Object.keys(landIndex).length, thumbs: thumbKind, scenes: Object.keys(landIndex).sort().map(function (k) { const l = landIndex[k]; const e = encodeURIComponent(l[0]); const d = path.dirname(l[0]).replace(/\\/g, '/'); const dm = (global.__rsDims || {})[l[0]]; const ori = (dm && dm.w && dm.h) ? (dm.w > dm.h ? 'l' : (dm.h > dm.w ? 'p' : 's')) : null; return { key: k, count: l.length, dir: (d === '.' ? '' : d), ori: ori, sample: '/media/' + e, thumb: '/thumb/' + encodeURIComponent(path.basename(l[0])) + '?src=media&w=320&p=' + e, video: VID_RE.test(l[0]) }; }) });   // v2.40 dir = folder path; v2.41 ori = p|l|s from RS-SCENE-DIMS (null while unprobed / video)
@@ -1425,7 +1455,7 @@ resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chrom
 setTimeout(directorOnModeChange, 2000);   // v1.2: start the current mode's audio director after boot
 server.listen(PORT, () => {
   console.log('====================================================');
-  console.log('  Roomscape Conductor  v4.54 (community v0.31)');
+  console.log('  Roomscape Conductor  v4.74 (community v0.50)');
   console.log('  modules : ' + LIB_MODULES.join(', ') + '  (conductor-lib @ ' + LIB_DIR + ')');
   console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — app.html missing, serving control.html') + ')');
   console.log('  app   : ' + APP_DIR);
@@ -1644,7 +1674,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       res.writeHead = res.setHeader = function(){ return res; };
       res.write = res.end = function(){ return true; };
       function out(code, obj){
-        try{ W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); }catch(e){}
+        try{ W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); }catch(e){}
       }
       function body24(cb){
         var b = ''; req.on('data', function(c){ b += c; if (b.length > 65536) req.destroy(); });
@@ -2007,7 +2037,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       res.writeHead = res.setHeader = function () { return res; };
       res.write = res.end = function () { return true; };
       function out(code, obj) {
-        try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {}
+        try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {}
       }
       try {
         if (p === '/api/rules/state') {
@@ -2096,7 +2126,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         var out = ring;
         if (q) out = out.filter(function (r) { return (r.m || '').toLowerCase().indexOf(q) >= 0; });
         out = out.slice(-n);
-        W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+        W(200, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }));
         E(JSON.stringify({ ok: true, count: out.length, total: ring.length, lines: out }));
       } catch (e) {
         try { W(500, { 'Content-Type': 'application/json' }); E(JSON.stringify({ ok: false, error: String((e && e.message) || e) })); } catch (_) {}
@@ -2166,7 +2196,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       res.write = res.end = function () { return true; };
       var real = {
         writeHead: W, end: E, setHeader: SH,
-        json: function (code, obj) { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); }
+        json: function (code, obj) { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); }
       };
       try { hit.fn(req, res, u, real); }
       catch (e) { try { real.json(500, { ok: false, error: String((e && e.message) || e) }); } catch (_) {} console.error('[dispatch] handler error ' + u.pathname + ': ' + (e && e.message)); }
@@ -2667,7 +2697,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         if (P !== '/api/timer' && P !== '/api/timer/presets') return;
         var W = res.writeHead.bind(res), E = res.end.bind(res);
         res.writeHead = res.setHeader = function () { return res; }; res.write = res.end = function () { return true; };
-        function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+        function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
         function body(cb) { var b = ''; req.on('data', function (d) { b += d; if (b.length > 1e6) req.destroy(); }); req.on('end', function () { var j = null; try { j = b ? JSON.parse(b) : {}; } catch (e) { return out(400, { ok: false, error: 'bad json' }); } cb(j); }); }
 
         /* ---- /api/timer/presets ---- */
@@ -2956,7 +2986,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; };
       res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       try {
         if (req.method === 'GET') {
           var fk = u.searchParams.get('files');
@@ -3077,7 +3107,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; };
       res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       try {
         if (req.method === 'GET') {
           var g = u.searchParams.get('game');
@@ -3301,7 +3331,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             try { snap = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (pe) { snap = null; }
             if (!snap || typeof snap !== 'object') { res.writeHead(500, { 'Content-Type': 'application/json' }); return res.end('{"ok":false,"error":"snapshot unreadable"}'); }
             if (snap.settings) snap.settings = redactSettings(snap.settings);
-            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.writeHead(200, corsHdr(req, { 'Content-Type': 'application/json' }));
             return res.end(JSON.stringify(snap));
           }
           var list = [];
@@ -3310,7 +3340,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
               .map(function (f) { var st = null; try { st = fs.statSync(path.join(HDIR, f)); } catch (e) {}
                 return { file: f, bytes: st ? st.size : 0 }; });
           } catch (e) {}
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.writeHead(200, corsHdr(req, { 'Content-Type': 'application/json' }));
           return res.end(JSON.stringify({ ok: true, snapshots: list }));
         } catch (e) {
           try { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"ok":false}'); } catch (x) {}
@@ -3345,7 +3375,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
               snapshot('blocked');
               console.error('[pguard] BLOCKED a /api/profiles write that would delete ' + missing.length + ' modes: ' + missing.join(', '));
               try {
-                res.writeHead(409, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.writeHead(409, corsHdr(req, { 'Content-Type': 'application/json' }));
                 res.end(JSON.stringify({
                   ok: false, blocked: true, missing: missing,
                   error: 'Save blocked: it would DELETE ' + missing.length + ' modes (' + missing.slice(0, 6).join(', ') + (missing.length > 6 ? '…' : '') + '). This tab is holding a stale copy — reload it (Ctrl+Shift+R). To genuinely delete these modes, save with "allowBulkDelete": true.'
@@ -3413,7 +3443,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
           var f = (j.frame && OKF[j.frame]) ? j.frame : SND.frame;
           SND = { on: !!j.on, frame: f }; REV++;
           try { console.log('[rules-sound] ' + (SND.on ? ('ON @ ' + SND.frame) : 'off')); } catch (e) {}
-          try { W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify({ ok: true, sound: SND })); } catch (e) {}
+          try { W(200, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify({ ok: true, sound: SND })); } catch (e) {}
         });
         req.on('error', function () {});
         return;
@@ -3434,7 +3464,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             if (typeof j.ts === 'number') j.ts = j.ts + REV; // sound flips re-render the wall
             out = JSON.stringify(j);
           } catch (e) {}
-          try { W2(code, hdrs || { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); } catch (e) {}
+          try { W2(code, hdrs || corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); } catch (e) {}
           try { E2(out); } catch (e) {}
           return true;
         };
@@ -3483,7 +3513,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         var W = res.writeHead.bind(res), E = res.end.bind(res);
         res.writeHead = res.setHeader = function () { return res; };
         res.write = res.end = function () { return true; };
-        function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+        function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
         var b = '';
         req.on('data', function (c) { b += c; if (b.length > 512 * 1024) { try { req.destroy(); } catch (e) {} } });
         req.on('end', function () {
@@ -3546,7 +3576,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             if (typeof j2.ts === 'number') j2.ts = j2.ts + (REV * 7); // *7 so it can't collide with the sound block's +1s
             out2 = JSON.stringify(j2);
           } catch (e) {}
-          try { W2(code, hdrs || { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); } catch (e) {}
+          try { W2(code, hdrs || corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); } catch (e) {}
           try { E2(out2); } catch (e) {}
           return true;
         };
@@ -3686,7 +3716,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; };
       res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       try {
         if (p === '/profiles-timemachine.html' && req.method === 'GET') {
           try { W(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); E(TM_HTML); } catch (e) {}
@@ -3697,7 +3727,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
           try {
             var liveJ = JSON.parse(fs.readFileSync(PF, 'utf8'));
             if (liveJ && liveJ.settings) liveJ.settings = redactSettings(liveJ.settings);
-            W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(liveJ));
+            W(200, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(liveJ));
           } catch (e) { out(500, { ok: false, error: 'store unreadable' }); }
           return;
         }
@@ -3711,7 +3741,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             try {
               var bakJ = JSON.parse(fs.readFileSync(fp, 'utf8'));
               if (bakJ && bakJ.settings) bakJ.settings = redactSettings(bakJ.settings);
-              W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(bakJ));
+              W(200, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(bakJ));
             } catch (e) { out(500, { ok: false, error: 'backup unreadable' }); }
             return;
           }
@@ -3912,7 +3942,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         res.write = res.end = function () { return true; };
         try {
           var bakCount = 0; try { bakCount = fs.readdirSync(BDIR).filter(function (f) { return /\.bak$/.test(f); }).length; } catch (e) {}
-          W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+          W(200, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }));
           E(JSON.stringify({ ok: true, harden: 'v1', stats: stats, bakCount: bakCount, wsClients: (typeof clients !== 'undefined' && clients) ? clients.size : -1 }));
         } catch (e) {}
       });
@@ -4130,7 +4160,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         var W = res.writeHead.bind(res), E = res.end.bind(res);
         res.writeHead = res.setHeader = function () { return res; };
         res.write = res.end = function () { return true; };
-        function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+        function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
         function cfgOut(extra) {
           return Object.assign({ ok: true,
             schedule: Array.isArray(settings.schedule) ? settings.schedule : [],
@@ -4321,7 +4351,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; }; res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       function body(cb) { var b = ''; req.on('data', function (d) { b += d; if (b.length > 512 * 1024) req.destroy(); }); req.on('end', function () { var j = null; try { j = b ? JSON.parse(b) : {}; } catch (e) { return out(400, { ok: false, error: 'bad json' }); } cb(j || {}); }); }
       if (req.method !== 'POST') return out(405, { ok: false, error: 'method' });
 
@@ -4392,7 +4422,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       if (p !== '/api/tts' && p !== '/api/tts/voices') return;
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; }; res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       if (p === '/api/tts/voices') { var c0 = ttsCfg(); return out(200, { ok: true, configured: haOn(), engine: c0.engine, voices: c0.voices }); }
       if (req.method !== 'POST') return out(405, { ok: false, error: 'method' });
       var b0 = ''; req.on('data', function (d) { b0 += d; if (b0.length > 64 * 1024) req.destroy(); });
@@ -4898,7 +4928,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; }; res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       function body(cb) { var bb = ''; req.on('data', function (d) { bb += d; if (bb.length > 512 * 1024) req.destroy(); }); req.on('end', function () { var j = null; try { j = bb ? JSON.parse(bb) : {}; } catch (e) { return out(400, { ok: false, error: 'bad json' }); } cb(j || {}); }); req.on('error', function () {}); }
 
       if (p === '/api/games' && req.method === 'GET')
@@ -4933,7 +4963,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       if (u.pathname !== '/api/audio/stop') return;
       var W = res.writeHead.bind(res), E = res.end.bind(res);
       res.writeHead = res.setHeader = function () { return res; }; res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { try { W(code, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })); E(JSON.stringify(obj)); } catch (e) {} }
       if (req.method !== 'POST') return out(405, { ok: false, error: 'method' });
       req.resume();
       req.on('end', function () {
@@ -5144,10 +5174,10 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         if (!files.some(function (f) { return f.name === id + '/theme.json'; }))
           return real.json(400, { ok: false, error: 'pack has no theme.json', pack: id });
         var buf = zip.writeZip(files);
-        real.writeHead(200, { 'Content-Type': 'application/zip',
+        real.writeHead(200, corsHdr(req, { 'Content-Type': 'application/zip',
                               'Content-Disposition': 'attachment; filename="' + id + '.roomscape-theme.zip"',
                               'Content-Length': buf.length,
-                              'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+                              'Cache-Control': 'no-store' }));
         real.end(buf);
         console.log('[theme-zip] exported ' + id + ' (' + files.length + ' file(s), ' + buf.length + ' bytes)');
       } catch (e) { real.json(500, { ok: false, error: String(e && e.message).slice(0, 200) }); }
@@ -5257,4 +5287,199 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 
     console.log('[theme-zip] RS-THEME-ZIP ready — GET /api/theme/export/<pack> · POST /api/theme/import (cap 100 MB)');
   } catch (e) { try { console.error('[theme-zip] init failed:', e && e.message); } catch (x) {} }
+})();
+
+/* ================= RS-AUTH v1 (Phase 4a, 2026-08-06) =================
+   Admin-token gate — "keep it simple": one token, mutations only.
+   TOKEN SOURCE (first match wins):
+     1. env ADMIN_TOKEN
+     2. <APP_DIR>/data/admin-token (one line)
+     3. generated on first run — crypto.randomBytes(24).toString('base64url'),
+        written to data/admin-token (mode 600 attempted; a no-op on
+        Windows/SMB shares) and printed once in the boot log.
+   GATE — chain-capture wrapper, NOT a plain prependListener: an unauthorized
+   request must never REACH a handler. Prepend + res-neutering (the pattern the
+   other appended blocks use) would silence the response but the downstream
+   handlers would still RUN — /api/upload would still write the file. So, like
+   the PROFILES-GUARD, we capture server.listeners('request') — this block is
+   appended LAST, so that list is the complete stack (every later prepend incl.
+   the router dispatcher, then the guard's own wrapper, then the native
+   coreHandler) — replace it with ONE listener that checks the token and only
+   replays the captured chain in order when the request passes. WS upgrades are
+   'upgrade' events, not 'request' — untouched (kiosk frames stay tokenless).
+   RULES:
+     - GET / HEAD / OPTIONS pass — the read-only surface stays open on the
+       LAN — EXCEPT GET /api/ha/entities (your HA entity inventory; token
+       required) and /api/tag/* when CONFIG.auth.tagOpen === false (the core
+       tag route answers GET as well as POST, so closing it gates both verbs).
+     - every other method needs  x-rs-token: <token>  header or ?token= query.
+     - /api/tag/* is exempt by default (NFC taps arrive via HA rest_command;
+       SECURITY.md shows adding the header to rest_command — once done, set
+       auth.tagOpen:false to close the exemption).
+     - NO localhost exemption: behind Docker port-mapping remoteAddress is the
+       docker bridge, so "localhost" would quietly mean "everyone" — and smoke
+       (which IS localhost) could never test the gate.
+     - CONFIG.auth.enabled === false disables the gate entirely (upgrade path
+       for the reference install). CONFIG.auth is read LIVE per request, so
+       POST /api/config {auth:{...}} applies without a restart.
+   401 -> {ok:false, error:'auth', hint:'x-rs-token header'}. */
+;(function () {
+  try {
+    if (typeof server === 'undefined' || !server || !server.listeners) { console.error('[auth] no server — gate inactive'); return; }
+    var TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
+    var TOK_FILE = path.join(APP_DIR, 'data', 'admin-token');
+    if (!TOKEN) { try { TOKEN = String(fs.readFileSync(TOK_FILE, 'utf8')).trim(); } catch (e) {} }
+    if (!TOKEN) {
+      TOKEN = require('crypto').randomBytes(24).toString('base64url');
+      try {
+        fs.mkdirSync(path.dirname(TOK_FILE), { recursive: true });
+        fs.writeFileSync(TOK_FILE, TOKEN + '\n', { mode: 0o600 });
+      } catch (e) { console.error('[auth] could not write ' + TOK_FILE + ': ' + (e && e.message)); }
+      console.log('[auth] admin token (first run): ' + TOKEN + ' — keep it; also in data/admin-token');
+    }
+    function authCfg() { return (CONFIG && CONFIG.auth) || {}; }
+    function sentToken(req, u) {
+      var h = req.headers && req.headers['x-rs-token'];
+      if (h) return String(Array.isArray(h) ? h[0] : h).trim();
+      try { return String(u.searchParams.get('token') || '').trim(); } catch (e) { return ''; }
+    }
+    function allowed(req) {
+      var cfg = authCfg();
+      if (cfg.enabled === false) return true;
+      var m = String(req.method || 'GET').toUpperCase();
+      var u; try { u = new URL(req.url || '/', 'http://x'); } catch (e) { return false; }
+      var p = u.pathname;
+      var tagOpen = cfg.tagOpen !== false;
+      var isTag = p.indexOf('/api/tag/') === 0;
+      if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') {
+        if (p === '/api/ha/entities') return sentToken(req, u) === TOKEN;   // the one gated GET
+        if (isTag && !tagOpen) return sentToken(req, u) === TOKEN;
+        return true;
+      }
+      if (isTag && tagOpen) return true;
+      return sentToken(req, u) === TOKEN;
+    }
+    var chain = server.listeners('request').slice();
+    server.removeAllListeners('request');
+    server.on('request', function (req, res) {
+      if (allowed(req)) { for (var i = 0; i < chain.length; i++) chain[i].call(server, req, res); return; }
+      try {
+        res.writeHead(401, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }));
+        res.end(JSON.stringify({ ok: false, error: 'auth', hint: 'x-rs-token header' }));
+      } catch (e) {}
+      try { req.resume(); } catch (e) {}   // drain any body so the socket closes cleanly
+    });
+    console.log('[auth] RS-AUTH v1 active — mutations need x-rs-token ('
+      + (process.env.ADMIN_TOKEN ? 'env ADMIN_TOKEN' : 'data/admin-token') + ')'
+      + (authCfg().enabled === false ? ' [DISABLED — config auth.enabled:false]' : '')
+      + (authCfg().tagOpen === false ? ' [tag route closed]' : ' [tag route open]')
+      + ' · chain: ' + chain.length + ' listener(s) wrapped');
+  } catch (e) { try { console.error('[auth] init failed:', e && e.message); } catch (x) {} }
+})();
+
+/* ================= RS-SETUP-API v1 (Phase 4a, 2026-08-06) =================
+   Two router endpoints for the Phase-4b first-run wizard — both behind the
+   RS-AUTH gate above (/api/ha/entities is the one token-gated GET;
+   /api/config is a POST like any other):
+     GET  /api/ha/entities?domain=media_player|light|...
+          -> { ok, domain, entities:[{entity_id, friendly_name, state}] }
+          via conductor-lib/ha.js haFetch('GET','/api/states');
+          HA unconfigured -> 200 { ok:false, error:'ha not configured' }.
+     POST /api/config { <partial config> }
+          -> whitelisted top-level keys (CFG_KEYS) deep-merged onto the live
+          config.json (CONFIG_FILE env or APP_DIR/config.json), with a
+          timestamped .bak written alongside first (rule: never overwrite a
+          user data file without a backup). Then re-derived LIVE:
+            CONFIG reassigned (corsOrigin + the auth gate read it per call),
+            AT_REST + MODE_ORDER[0], LAYOUT mutated IN PLACE (the frames
+            array keeps its identity — AUDIO_FRAMES shares the reference),
+            settings.ha/rooms/edges re-merged (mirrors loadProfiles),
+            state rebroadcast to the wall.
+          /api/layout reflects the change immediately (verified by smoke).
+          Boot-sized consumers do NOT follow a layout change live
+          (state.frames length, DEFAULT_SETTINGS.ha.tvs seeds, frame pages
+          already open) — layout changes answer restartAdvised:true honestly. */
+;(function () {
+  try {
+    var R = global.__rsRouter; if (!R) { console.log('[setup-api] router missing — skipped'); return; }
+
+    R.add('GET', '/api/ha/entities', function (req, res, u, real) {
+      var domain = String(u.searchParams.get('domain') || '');
+      if (!/^[a-z_]+$/.test(domain)) return real.json(400, { ok: false, error: 'need ?domain= (e.g. media_player, light)' });
+      if (!haOn()) return real.json(200, { ok: false, error: 'ha not configured' });
+      haFetch('GET', '/api/states', null, function (err, code, j) {
+        if (err) return real.json(200, { ok: false, error: 'ha unreachable: ' + (err.message || err) });
+        if (code !== 200 || !Array.isArray(j)) return real.json(200, { ok: false, error: 'ha status ' + code });
+        var pre = domain + '.';
+        real.json(200, { ok: true, domain: domain, entities: j
+          .filter(function (st) { return st && typeof st.entity_id === 'string' && st.entity_id.indexOf(pre) === 0; })
+          .map(function (st) { return { entity_id: st.entity_id, friendly_name: (st.attributes && st.attributes.friendly_name) || st.entity_id, state: st.state }; }) });
+      });
+    });
+
+    var CFG_KEYS = ['atRestMode', 'layout', 'ha', 'rooms', 'edges', 'cors', 'auth'];
+    function deepMerge(dst, src) {
+      Object.keys(src).forEach(function (k) {
+        var sv = src[k];
+        if (sv && typeof sv === 'object' && !Array.isArray(sv) && dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) deepMerge(dst[k], sv);
+        else dst[k] = sv;                 // arrays + scalars replace, objects merge
+      });
+      return dst;
+    }
+    /* Mirrors the boot-time LAYOUT IIFE (top of file) — same walls fallback,
+       same derived roles incl. the "primary = LAST wall's center" rule. Keep
+       the two in sync if the derivation ever changes. */
+    function rederiveLayout() {
+      var walls = { L: ['L1', 'L2', 'L3'], R: ['R1', 'R2', 'R3'] };
+      if (CONFIG.layout && CONFIG.layout.walls && typeof CONFIG.layout.walls === 'object' &&
+          !Array.isArray(CONFIG.layout.walls) && Object.keys(CONFIG.layout.walls).length) walls = CONFIG.layout.walls;
+      var frames = [];
+      Object.keys(walls).forEach(function (k) { (Array.isArray(walls[k]) ? walls[k] : []).forEach(function (f) { frames.push(f); }); });
+      var centers = [], corners = [];
+      Object.keys(walls).forEach(function (k) {
+        var w = Array.isArray(walls[k]) ? walls[k] : [];
+        if (!w.length) return;
+        centers.push(w[Math.floor(w.length / 2)]);
+        if (corners.indexOf(w[0]) < 0) corners.push(w[0]);
+        if (corners.indexOf(w[w.length - 1]) < 0) corners.push(w[w.length - 1]);
+      });
+      var derived = { primary: centers[centers.length - 1] || frames[0],
+                      centers: centers, corners: corners.slice(0, 4), sweepOrder: frames.slice() };
+      LAYOUT.walls = walls;
+      LAYOUT.frames.length = 0; frames.forEach(function (f) { LAYOUT.frames.push(f); });   // in place — shared refs stay live
+      LAYOUT.roles = Object.assign(derived, (CONFIG.layout && CONFIG.layout.roles) || {});
+      LAYOUT.orientation = (CONFIG.layout && CONFIG.layout.orientation) || 'portrait';
+    }
+
+    R.add('POST', '/api/config', function (req, res, u, real) {
+      R.readBody(req, function (b) {
+        if (!b || typeof b !== 'object' || Array.isArray(b)) return real.json(400, { ok: false, error: 'need a JSON config object' });
+        var patch = {}, ignored = [];
+        Object.keys(b).forEach(function (k) { if (CFG_KEYS.indexOf(k) >= 0) patch[k] = b[k]; else ignored.push(k); });
+        if (!Object.keys(patch).length) return real.json(400, { ok: false, error: 'no allowed keys — expected any of: ' + CFG_KEYS.join(', '), ignored: ignored });
+        var file = process.env.CONFIG_FILE || path.join(APP_DIR, 'config.json');
+        var cur = {};
+        try { cur = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (e) { cur = {}; }
+        try {
+          if (fs.existsSync(file)) fs.copyFileSync(file, file + '.' + new Date().toISOString().replace(/[:.]/g, '-') + '.bak');
+        } catch (e) { return real.json(500, { ok: false, error: 'backup failed, refusing to write: ' + (e && e.message) }); }
+        var merged = deepMerge(cur, JSON.parse(JSON.stringify(patch)));
+        try { fs.writeFileSync(file, JSON.stringify(merged, null, 2)); }
+        catch (e) { return real.json(500, { ok: false, error: 'write failed: ' + (e && e.message) }); }
+        CONFIG = merged;
+        AT_REST = CONFIG.atRestMode || 'dining';
+        try { MODE_ORDER[0] = AT_REST; } catch (e) {}
+        rederiveLayout();
+        if (CONFIG.ha)    settings.ha    = Object.assign({}, settings.ha, CONFIG.ha);
+        if (CONFIG.rooms) settings.rooms = CONFIG.rooms;
+        if (CONFIG.edges) settings.edges = CONFIG.edges;
+        try { broadcastState(); } catch (e) {}
+        console.log('[setup-api] config.json updated (' + Object.keys(patch).join(', ') + ')' + (('layout' in patch) ? ' — restart advised' : ''));
+        real.json(200, { ok: true, restartAdvised: ('layout' in patch), ignored: ignored,
+                         layout: { frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST } });
+      });
+    });
+
+    console.log('[setup-api] RS-SETUP-API v1 ready — GET /api/ha/entities?domain= · POST /api/config');
+  } catch (e) { try { console.error('[setup-api] init failed:', e && e.message); } catch (x) {} }
 })();

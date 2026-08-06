@@ -1,6 +1,20 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.5 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.6 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.6 (Phase 4a, RS-AUTH): boots 1+2 run with ADMIN_TOKEN=smoketoken and the
+   POST helpers all send x-rs-token — so every pre-existing mutation check now
+   proves the route works WITH the token (and never writes a token file into
+   the repo data/, which APP_DIR=ROOT would otherwise do). New checks:
+   tokenless POST -> 401 {error:'auth'} while GETs stay open; GET
+   /api/ha/entities is the one gated GET (401 tokenless; with token + no HA ->
+   200 {ok:false,'ha not configured'}); boot 2 POSTs /api/config
+   {atRestMode:'calm2'} against its scratch CONFIG_FILE (timestamped .bak
+   appears beside it, /api/layout flips live, repo config untouched); boot 3 is
+   a fresh scratch APP_DIR with NO ADMIN_TOKEN — the token generates, prints
+   ("admin token (first run)"), lands in data/admin-token, and the file token
+   authorizes a POST that a tokenless call can't make. There is deliberately NO
+   localhost exemption in the gate — smoke IS localhost, so these checks
+   genuinely exercise it.
    v1.5 (Phase 3c, RS-THEMES-UI): one cheap regression canary — the served app
    page must carry the theme-sheet markup hook (the static id="themesImport"
    file input that Settings → Theme packs → Import theme… clicks). No browser
@@ -33,6 +47,7 @@ const fs = require('fs');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 8190;
+const TOK = 'smoketoken';   // v1.6: fixed admin token for boots 1+2 (env-injected)
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-smoke-'));
 
 // v1.4: boot 1 gets a THROWAWAY copy of the repo's themes/ — the import
@@ -45,6 +60,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
   env: Object.assign({}, process.env, {
     PORT: String(PORT),
     APP_DIR: ROOT,
+    ADMIN_TOKEN: TOK,                            // v1.6: env token — nothing writes into the repo data/
     STATE_FILE: path.join(tmp, 'state.json'),
     PROFILES_FILE: path.join(tmp, 'profiles1.json'),   // v1.3: round-trip check WRITES profiles — scratch file, never the repo store
     MEDIA_DIR: path.join(tmp, 'media'),          // v1.1: upload check writes here, not the repo
@@ -57,11 +73,14 @@ let bootLog = '';
 child.stdout.on('data', d => bootLog += d);
 child.stderr.on('data', d => bootLog += d);
 
-function post(p, obj, port) {
+function post(p, obj, port, tok) {   // v1.6: tok undefined -> smoke token; tok null -> tokenless; string -> that token
   return new Promise((res, rej) => {
     const body = JSON.stringify(obj);
+    const hdrs = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+    const t = (tok === undefined) ? TOK : tok;
+    if (t) hdrs['x-rs-token'] = t;
     const rq = http.request({ host: '127.0.0.1', port: port || PORT, path: p, method: 'POST', timeout: 4000,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, r => {
+      headers: hdrs }, r => {
       let s = ''; r.on('data', c => s += c);
       r.on('end', () => res({ code: r.statusCode, body: s }));
     });
@@ -72,6 +91,15 @@ function post(p, obj, port) {
 function get(p, port) {
   return new Promise((res, rej) => {
     http.get({ host: '127.0.0.1', port: port || PORT, path: p, timeout: 4000 }, r => {
+      let s = ''; r.on('data', c => s += c);
+      r.on('end', () => res({ code: r.statusCode, body: s }));
+    }).on('error', rej).on('timeout', function () { this.destroy(new Error('timeout')); });
+  });
+}
+// v1.6: GET carrying the admin token (for the one gated GET, /api/ha/entities)
+function getTok(p, port, tok) {
+  return new Promise((res, rej) => {
+    http.get({ host: '127.0.0.1', port: port || PORT, path: p, timeout: 4000, headers: { 'x-rs-token': tok || TOK } }, r => {
       let s = ''; r.on('data', c => s += c);
       r.on('end', () => res({ code: r.statusCode, body: s }));
     }).on('error', rej).on('timeout', function () { this.destroy(new Error('timeout')); });
@@ -89,7 +117,7 @@ function getBuf(p, port) {
 function postRaw(p, buf, ctype, port) {
   return new Promise((res, rej) => {
     const rq = http.request({ host: '127.0.0.1', port: port || PORT, path: p, method: 'POST', timeout: 8000,
-      headers: { 'Content-Type': ctype || 'application/zip', 'Content-Length': buf.length } }, r => {
+      headers: { 'Content-Type': ctype || 'application/zip', 'Content-Length': buf.length, 'x-rs-token': TOK } }, r => {
       let s = ''; r.on('data', c => s += c);
       r.on('end', () => res({ code: r.statusCode, body: s }));
     });
@@ -259,6 +287,22 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     const impBad = await postRaw('/api/theme/import', evil, 'application/zip');
     check('POST /api/theme/import rejects a ".." zip entry -> 400',
       impBad.code === 400, 'code ' + impBad.code + ' ' + impBad.body.slice(0, 160));
+
+    // ---- v1.6 (Phase 4a): RS-AUTH v1 — admin-token gate ----
+    check('boot log announces the auth gate', bootLog.indexOf('[auth] RS-AUTH v1 active') >= 0, 'no [auth] line in boot log');
+    const nt = await post('/api/mode/dining', {}, PORT, null);
+    let ntj = null; try { ntj = JSON.parse(nt.body); } catch (e) {}
+    check('POST /api/mode/dining without token -> 401 {error:"auth"}',
+      nt.code === 401 && !!(ntj && ntj.error === 'auth'), 'code ' + nt.code + ' ' + nt.body.slice(0, 120));
+    const og = await get('/api/state');
+    check('GETs stay open without token', og.code === 200, 'code ' + og.code);
+    const he0 = await get('/api/ha/entities?domain=media_player');
+    check('GET /api/ha/entities without token -> 401 (the one gated GET)', he0.code === 401, 'code ' + he0.code);
+    const he1 = await getTok('/api/ha/entities?domain=media_player');
+    let hej = null; try { hej = JSON.parse(he1.body); } catch (e) {}
+    check('GET /api/ha/entities with token + no HA -> 200 {ok:false,"ha not configured"}',
+      he1.code === 200 && !!(hej && hej.ok === false && hej.error === 'ha not configured'),
+      'code ' + he1.code + ' ' + he1.body.slice(0, 160));
   }
   child.kill();
 
@@ -270,6 +314,7 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     env: Object.assign({}, process.env, {
       PORT: String(PORT2),
       APP_DIR: ROOT,
+      ADMIN_TOKEN: TOK,                          // v1.6
       CONFIG_FILE: cfgFile,
       STATE_FILE: path.join(tmp, 'state2.json'),
       PROFILES_FILE: path.join(tmp, 'profiles2.json'),
@@ -296,9 +341,56 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
           && JSON.stringify(r2.centers) === '["W2"]'
           && JSON.stringify(r2.sweepOrder) === '["W1","W2","W3"]',
         JSON.stringify(r2));
+
+      // v1.6 (Phase 4a): POST /api/config — scratch CONFIG_FILE, atRestMode flips live
+      const cp = await post('/api/config', { atRestMode: 'calm2' }, PORT2);
+      let cpj = null; try { cpj = JSON.parse(cp.body); } catch (e) {}
+      check('POST /api/config {atRestMode:"calm2"} -> ok:true, no restart advised',
+        cp.code === 200 && !!(cpj && cpj.ok && cpj.restartAdvised !== true), 'code ' + cp.code + ' ' + cp.body.slice(0, 200));
+      const lay3 = await get('/api/layout', PORT2);
+      let l3 = null; try { l3 = JSON.parse(lay3.body); } catch (e) {}
+      check('config change is live: /api/layout atRest === "calm2"', !!l3 && l3.atRest === 'calm2', lay3.body.slice(0, 200));
+      check('config write left a timestamped .bak beside the scratch config',
+        fs.readdirSync(tmp).some(f => f.indexOf('smoke-config.json.') === 0 && /\.bak$/.test(f)),
+        JSON.stringify(fs.readdirSync(tmp).filter(f => f.indexOf('smoke-config') === 0)));
     }
   } catch (e) { check('config boot: layout checks ran', false, String(e)); }
   child2.kill();
+
+  // ---- boot 3 (v1.6, Phase 4a): NO ADMIN_TOKEN -> first-run generation into a scratch APP_DIR ----
+  const PORT3 = PORT + 2;
+  const app3 = path.join(tmp, 'app3');
+  fs.mkdirSync(app3, { recursive: true });
+  const child3 = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
+    env: Object.assign({}, process.env, {
+      PORT: String(PORT3),
+      APP_DIR: app3,                             // scratch — the generated data/admin-token must never land in the repo
+      ADMIN_TOKEN: '',
+      MEDIA_DIR: path.join(tmp, 'media'),
+      HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let bootLog3 = '';
+  child3.stdout.on('data', d => bootLog3 += d);
+  child3.stderr.on('data', d => bootLog3 += d);
+  try {
+    let up3 = false;
+    for (let i = 0; i < 30 && !up3; i++) { await sleep(500); try { up3 = (await get('/api/health', PORT3)).code === 200; } catch (e) {} }
+    check('first-run boot: conductor boots with no ADMIN_TOKEN (scratch APP_DIR)', up3, 'no response after 15s. Boot log:\n' + bootLog3.slice(-2000));
+    if (up3) {
+      check('first-run boot log prints "admin token (first run)"', bootLog3.indexOf('admin token (first run):') >= 0, bootLog3.slice(-1200));
+      let genTok = '';
+      try { genTok = fs.readFileSync(path.join(app3, 'data', 'admin-token'), 'utf8').trim(); } catch (e) {}
+      check('generated token written to data/admin-token', genTok.length >= 24, 'token file missing/short: "' + genTok + '"');
+      const nt3 = await post('/api/mode/dining', {}, PORT3, null);
+      check('first-run boot: tokenless POST -> 401', nt3.code === 401, 'code ' + nt3.code);
+      const ok3 = await post('/api/mode/dining', {}, PORT3, genTok);
+      let ok3j = null; try { ok3j = JSON.parse(ok3.body); } catch (e) {}
+      check('first-run boot: POST with the file token -> 200 ok', ok3.code === 200 && !!(ok3j && ok3j.ok), 'code ' + ok3.code + ' ' + ok3.body.slice(0, 120));
+    }
+  } catch (e) { check('first-run boot checks ran', false, String(e)); }
+  child3.kill();
 
   const fails = checks.filter(c => !c.ok).length;
   console.log('\n' + (fails ? 'SMOKE FAIL — ' + fails + ' failing' : 'SMOKE PASS — ' + checks.length + ' checks'));

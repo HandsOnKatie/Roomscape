@@ -30,6 +30,14 @@
     "note": "URL/token come from .env (MA_URL / MA_TOKEN); player picked in the app"
   },
 
+  "auth": {
+    "_comment": "RS-AUTH v1 (SECURITY.md). enabled:false disables the admin-token gate entirely; tagOpen:false ALSO requires the token for /api/tag/* (NFC taps via HA rest_command — add the x-rs-token header there first)",
+    "enabled": true,
+    "tagOpen": true
+  },
+
+  "_cors": "cors omitted = no Access-Control-Allow-Origin header (same-origin only — the default). Add \"cors\": \"*\" for the legacy wide-open behaviour, or an allow-list array like [\"http://conductor.local:8090\"]",
+
   "edges": [],
 
   "rooms": [

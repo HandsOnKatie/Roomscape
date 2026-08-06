@@ -1,5 +1,9 @@
 /* ===================================================================
-   The Immersion Engine — shared core (engine.js)  v0.90
+   The Immersion Engine — shared core (engine.js)  v0.91
+   (v0.91 Phase 4a: RS-AUTH — the message-bus 'message' listener accepts only
+   same-origin postMessage [plus ''/'null' so file:// wall-test dev keeps
+   working]; postEverywhere targets location.origin instead of '*' whenever a
+   real origin exists)
    (v0.90 Phase 3c: missing theme-pack media [__missing__/<pack>/<rel> refs from
    RS-THEMES] render a labelled 🧩 placeholder panel [panelMissing] on the
    engine render paths [renderFrame pano/portrait] instead of a broken
@@ -599,19 +603,32 @@
       }
     }
     if (bc) bc.onmessage = function (e) { handle(e.data); };
-    window.addEventListener('message', function (e) { handle(e.data); });
+    window.addEventListener('message', function (e) {
+      /* RS-AUTH v1 (Phase 4a): only same-origin peers may drive the engine bus
+         (a hostile page could otherwise postMessage state/audio commands into
+         an open app tab). Pages opened from disk (wall-test dev) report origin
+         '' or 'null' — keep that path working. */
+      var o = e.origin || '';
+      if (o !== '' && o !== 'null' && o !== location.origin) return;
+      handle(e.data);
+    });
     window.addEventListener('storage', function (e) {
       if (e.key === CH + ':state' && e.newValue) { try { emit(JSON.parse(e.newValue)); } catch (_) {} }
     });
 
     function postEverywhere(msg) {
+      /* RS-AUTH v1 (Phase 4a): target our own origin, not '*', so state never
+         leaks to a foreign document that ended up as parent/opener. file://
+         pages have origin 'null' — no usable target origin exists there, so
+         disk dev (wall-test) keeps '*'. */
+      var TGT = (location.origin && location.origin !== 'null') ? location.origin : '*';
       if (bc) { try { bc.postMessage(msg); } catch (_) {} }
       if (msg.type === 'state') { try { localStorage.setItem(CH + ':state', JSON.stringify(msg.state)); } catch (_) {} }
       if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(msg)); } catch (_) {} }
       // children (iframes) + opener + parent
-      try { for (var i = 0; i < window.frames.length; i++) window.frames[i].postMessage(msg, '*'); } catch (_) {}
-      try { if (window.opener) window.opener.postMessage(msg, '*'); } catch (_) {}
-      try { if (window.parent && window.parent !== window) window.parent.postMessage(msg, '*'); } catch (_) {}
+      try { for (var i = 0; i < window.frames.length; i++) window.frames[i].postMessage(msg, TGT); } catch (_) {}
+      try { if (window.opener) window.opener.postMessage(msg, TGT); } catch (_) {}
+      try { if (window.parent && window.parent !== window) window.parent.postMessage(msg, TGT); } catch (_) {}
     }
     function publish(state) { current = state; postEverywhere({ ie: true, type: 'state', state: state }); }
     function onState(cb) { listeners.push(cb); if (current) cb(current); }

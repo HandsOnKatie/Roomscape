@@ -1,5 +1,7 @@
 /* ===================================================================
-   conductor-lib/media.js  v1.0
+   conductor-lib/media.js  v1.1
+   v1.1 (Phase 4a, RS-AUTH): serveFile CORS header now flows through the
+        conductor's ctx.corsHdr policy (config-driven; default = no ACAO).
    Extracted verbatim from conductor.js v2.62 (RoomScape Conductor v3.62 split).
    Media serving + photo listing + media manifest + thumbnail pipeline.
    SAFETY RULES (absolute):
@@ -88,7 +90,7 @@ module.exports = function (ctx) {
     // connections dangling. Streams also stop 4K videos being read into RAM.
     fs.stat(file, (err, st) => {
       if (err || !st.isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
-      const h = { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Access-Control-Allow-Origin': '*', 'Accept-Ranges': 'bytes' };
+      const h = ctx.corsHdr(res.req, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Accept-Ranges': 'bytes' });   /* RS-AUTH v1: CORS via the conductor policy (call-time ctx use, per the discipline note) */
       // app files must never be heuristically cached (stale engine/fx in open tabs); media may cache
       h['Cache-Control'] = cache ? 'public, max-age=3600' : 'no-store';
       let start = 0, end = st.size - 1, code = 200;
