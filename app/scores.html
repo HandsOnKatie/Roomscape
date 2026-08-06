@@ -1,0 +1,86 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RoomScape Scoreboard</title><style>
+:root{--bg:#0b0c10;--panel:#171922;--panel2:#1d2029;--line:#2a2d38;--ink:#e8e6df;--dim:#a7a499;--faint:#6a6d79;--gold:#c9a35e;--gold2:#e3c489}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:1100px;margin:0 auto}
+h1{font:700 26px "Iowan Old Style",Palatino,Georgia,serif;color:var(--gold2);margin:0 0 4px}
+.sub{color:var(--dim);margin-bottom:22px}h2{font:600 13px sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin:26px 0 10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+.tile .v{font:700 26px "Iowan Old Style",Georgia,serif;color:var(--ink)}.tile .l{color:var(--dim);font-size:12px;margin-top:2px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.champ{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.cg{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;gap:10px;align-items:center}
+.cg img{width:52px;height:52px;object-fit:cover;border-radius:8px}.cg .n{font-size:13px}.cg .w{color:var(--gold2);font-size:12px}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
+th{color:var(--faint);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:11px}
+.wchip{display:inline-block;padding:1px 8px;border-radius:10px;background:rgba(201,163,94,.16);color:var(--gold2);margin-right:4px;font-size:12px}
+.del{color:#e0655f;cursor:pointer;opacity:.6}.del:hover{opacity:1}.mut{color:var(--faint)}
+svg text{font:12px -apple-system,Segoe UI,Roboto,sans-serif;fill:var(--ink)}svg .lbl{fill:var(--dim)}svg .val{fill:var(--ink);font-weight:600}
+input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px}
+button{background:var(--panel2);border:1px solid var(--gold);color:var(--gold2);border-radius:8px;padding:8px 14px;cursor:pointer}
+</style></head><body>
+<div style="display:flex;align-items:baseline;justify-content:space-between"><h1>🏆 RoomScape Scoreboard</h1><a href="/app.html" style="color:#c9a35e;text-decoration:none;font-size:13px">← back to RoomScape</a></div><div class="sub" id="sub">Loading…</div>
+<div class="tiles" id="tiles"></div>
+<h2>Wins by player</h2><div class="panel" id="winsChart"></div>
+<h2>Win rate <span class="mut">(3+ games)</span></h2><div class="panel" id="rateChart"></div>
+<h2>Most played</h2><div class="panel" id="playChart"></div>
+<h2 id="champsHead">Reigning champions</h2><div class="champ" id="champs"></div>
+<h2>Results</h2><div class="panel"><table id="results"><thead><tr><th>Date</th><th>Game</th><th>Winners</th><th>Played</th><th>Scores</th><th></th></tr></thead><tbody></tbody></table>
+<div style="margin-top:12px;display:flex;gap:8px"><input id="newp" placeholder="+ add player name"><button onclick="addPlayer()">Add player</button></div></div>
+<script>
+var Q=String.fromCharCode(34);
+var PAL=["#2f8f55","#b98a26","#c2496a","#7a5fe0","#12a3a3"];
+var DATA=null,RULES={};
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}
+function pcolor(name){var i=(DATA.players||[]).findIndex(function(p){return p.name===name});return PAL[(i<0?0:i)%PAL.length]}
+function hbar(el,rows,unit){
+ if(!rows.length){el.innerHTML="<span class=mut>Nothing here yet. Play something tonight, then tap \ud83c\udfc6 Scores in the app \u2014 this page comes alive with the first result.</span>";return}
+ var max=Math.max.apply(null,rows.map(function(r){return r.v}))||1;var H=rows.length*34+8;
+ var s="<svg width=" + Q + "100%" + Q + " height=" + Q + H + Q + ">";
+ rows.forEach(function(r,i){var y=i*34+6;var w=Math.max(1,r.v/max*62);
+  s+="<text class=lbl x=0 y="+(y+13)+">"+esc(r.n)+"</text>";
+  s+="<rect x=" + Q + "20%" + Q + " y="+y+" rx=4 height=18 width=" + Q + w + "%" + Q + " fill=" + Q + (r.c||PAL[0]) + Q + "><title>"+esc(r.n)+": "+r.v+unit+"</title></rect>";
+  s+="<text class=val x=" + Q + (21+w) + "%" + Q + " y="+(y+13)+">"+r.v+unit+"</text>"});
+ el.innerHTML=s+"</svg>"}
+function load(){Promise.all([fetch("/api/scores").then(function(r){return r.json()}),fetch("/api/rules").then(function(r){return r.json()})]).then(function(a){DATA=a[0];RULES=(a[1]&&a[1].games)||{};render()})}
+function gname(k,f){return (RULES[k]&&RULES[k].name)||f||k}
+function render(){
+ var res=DATA.results||[],pls=DATA.players||[];
+ var wins={},plays={},gplays={},gwins={},streaks={},cur={};
+ res.slice().sort(function(a,b){return a.dateISO<b.dateISO?-1:1}).forEach(function(r){
+  gplays[r.game]=(gplays[r.game]||0)+1;
+  r.players.forEach(function(p){plays[p.name]=(plays[p.name]||0)+1;
+   if(p.won){wins[p.name]=(wins[p.name]||0)+1;cur[p.name]=(cur[p.name]||0)+1;streaks[p.name]=Math.max(streaks[p.name]||0,cur[p.name]);
+    gwins[r.game]=gwins[r.game]||{};gwins[r.game][p.name]=(gwins[r.game][p.name]||0)+1}
+   else cur[p.name]=0})});
+ var topW=Object.keys(wins).sort(function(a,b){return wins[b]-wins[a]})[0];
+ var topS=Object.keys(streaks).sort(function(a,b){return streaks[b]-streaks[a]})[0];
+ var topG=Object.keys(gplays).sort(function(a,b){return gplays[b]-gplays[a]})[0];
+ document.getElementById("sub").textContent=res.length+" games recorded / "+pls.length+" players";
+ document.getElementById("tiles").innerHTML=
+  "<div class=tile><div class=v>"+res.length+"</div><div class=l>Games logged</div></div>"+
+  "<div class=tile><div class=v>"+(topW?esc(topW):"-")+"</div><div class=l>Most wins"+(topW?" ("+wins[topW]+")":"")+"</div></div>"+
+  "<div class=tile><div class=v>"+(topS?esc(topS):"-")+"</div><div class=l>Best streak"+(topS?" ("+streaks[topS]+")":"")+"</div></div>"+
+  "<div class=tile><div class=v style=" + Q + "font-size:16px;line-height:1.3" + Q + ">"+(topG?esc(gname(topG)):"-")+"</div><div class=l>Most played</div></div>";
+ hbar(document.getElementById("winsChart"),pls.map(function(p){return{n:p.name,v:wins[p.name]||0,c:pcolor(p.name)}}).sort(function(a,b){return b.v-a.v})," wins");
+ hbar(document.getElementById("rateChart"),pls.filter(function(p){return (plays[p.name]||0)>=3}).map(function(p){return{n:p.name,v:Math.round((wins[p.name]||0)/plays[p.name]*100),c:pcolor(p.name)}}).sort(function(a,b){return b.v-a.v}),"%");
+ hbar(document.getElementById("playChart"),Object.keys(gplays).sort(function(a,b){return gplays[b]-gplays[a]}).slice(0,12).map(function(g){return{n:gname(g),v:gplays[g],c:"#b98a26"}})," plays");
+ document.getElementById("champsHead").style.display=Object.keys(gwins).length?"":"none";
+  document.getElementById("champs").innerHTML=Object.keys(gwins).map(function(g){
+  var w=Object.keys(gwins[g]).sort(function(a,b){return gwins[g][b]-gwins[g][a]})[0];
+  return "<div class=cg><img src=" + Q + "/media/covers/cover_"+g+".jpg" + Q + " onerror=" + Q + "this.remove()" + Q + " ><div><div class=n>"+esc(gname(g))+"</div><div class=w>WINS: "+esc(w)+" x"+gwins[g][w]+"</div></div></div>"}).join("");
+ document.querySelector("#results tbody").innerHTML=res.slice().reverse().map(function(r){
+  var winners=r.players.filter(function(p){return p.won}).map(function(p){return "<span class=wchip>W "+esc(p.name)+"</span>"}).join("");
+  var scores=r.players.filter(function(p){return p.score!=null}).map(function(p){return esc(p.name)+" "+p.score}).join(", ");
+  var row="<tr><td>"+new Date(r.dateISO).toLocaleDateString("en-GB")+"</td><td>"+esc(r.name||gname(r.game))+"</td><td>"+winners+"</td>";
+  row+="<td class=mut>"+r.players.map(function(p){return esc(p.name)}).join(", ")+"</td><td class=mut>"+esc(scores)+"</td>";
+  row+="<td><span class=del data-id=" + Q + r.id + Q + ">x</span></td></tr>";return row}).join("");
+ Array.prototype.forEach.call(document.querySelectorAll(".del"),function(d){d.onclick=function(){
+  if(!confirm("Delete this result?"))return;
+  DATA.results=DATA.results.filter(function(r){return r.id!==d.dataset.id});
+  fetch("/api/scores",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(DATA)}).then(load)}})}
+function addPlayer(){var v=document.getElementById("newp").value.trim();if(!v)return;
+ if(!DATA.players.some(function(p){return p.name===v}))DATA.players.push({name:v});
+ fetch("/api/scores",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(DATA)}).then(load);document.getElementById("newp").value=""}
+load();setInterval(load,30000);
+</script></body></html>

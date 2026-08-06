@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoomScape</title>
+<style>
+  /* ============ RoomScape — Play & Design  v3.41 ============
+     v3.41 (2026-08-02): ⏹ Stop all sounds button in 🗣 Moments → POST
+     /api/audio/stop (conductor v4.24, fx v1.39). (Matches app.js v3.41.)
+     v3.40 (2026-08-02): 🎉 GAMES becomes a top-level Play tab (RS-GAMES,
+     conductor v4.23, fx v1.38) — game card gallery, per-game setup sheets,
+     host consoles (charades / music quiz / quiz / werewolf narrator) and the
+     deck manager, all per GAMES-TAB-MOCKUP.html. (Matches app.js v3.40.)
+     v3.30 (2026-08-01): 🎭 MOMENTS becomes a top-level Play tab (was buried at
+     the foot of Modes) with a 🗣 Announce card — type a one-off line and the
+     room voice speaks it (conductor /api/tts). (Matches app.js v3.30.)
+     v3.29 (2026-08-01): #intromain full-width intro editor below the wall
+     (responsive .incuegrid, taller timeline) + 🗣 Say panel styles.
+     (Matches app.js v3.29 · conductor v4.13.)
+     v3.19 (2026-08-01): Intro Phase 2 — .intl .idot.frm red dot for title-card
+     cues. (Matches app.js v3.19 · conductor v4.03 · fx v1.28.)
+     v3.09 (2026-08-01): no CSS changes — version kept in step with app.js v3.09
+     (Scene fit select, conductor v3.93, fx v1.18).
+     v3.08 (2026-08-01): 🎬 INTRO LENS styles (conductor v3.92, RS-INTRO) — the
+     lens bar gains Intro; .incue cue cards with time-nudge steppers and ⟓
+     chaining, .intl mini-timeline dot strip, .inadd add-cue tiles, and the
+     #introov Play-view overlay (progress bar + ⏭ Skip). (Matches app.js v3.08.)
+     v2.98 (2026-07-31): MUSIC TAB PACK styles — .plsec section headers, the
+     .plcard ★ .pin corner, .modemus mode-music card, .recchip recently-played
+     chips, .vpre volume presets, .mbtn.tog shuffle toggle and the .upnext
+     queue peek. (Matches app.js v2.98 · conductor v3.82.)
+     v2.88 (2026-07-29): #phaserail scrolls with its native scrollbar HIDDEN
+     (scrollbar-width:none + ::-webkit-scrollbar height 0, the same treatment
+     #pcats already had) and its cap is raised to min(46vw,720px). The bar sat
+     under the chips on any mode with 4+ phases. Pairs with the app.js v2.88
+     phase-patch guard. (Matches app.js v2.88.)
+     v2.86 (timer feature pack, 2026-07-25): the Timer tab gains colour swatches,
+     a big display face rendered in the SELECTED style, a draggable drama timeline,
+     a fullscreen zero "podium" moment, named presets, a /api/sounds picker, a chess
+     clock, chained rounds and the 'sand' hourglass style. New CSS at the end of this
+     block (tsw, ttl, tpres, trnd, tch, tsndrow, tpodium, tpv-big, tpv-tiny).
+     NEVER write an asterisk-slash pair in this comment: it closes the block early
+     and the CSS parser then swallows the :root variables below (v2.86 bug —
+     every gold button lost its background and went dark-on-dark).
+     (Matches app.js v2.86 · conductor v3.72.)
+     v2.54 (UX round 2, 2026-07-24): 🔍 search moves into the #pcats chip row
+     (44px) and the row scrolls horizontally with an edge fade; ✎ Design is a
+     smaller ghost button (600ms hold to enter from Play); ✨ Surprise me in
+     #roomrow; Play row retitled 🎭 Moments; in-app ask dialogs replace every
+     browser prompt()/confirm(). (Matches app.js v2.54.)
+     v2.44 (UX round 1, 2026-07-24): honest Play caption, ▶ instant-play chip +
+     ★ favourite star on cards, sticky #roomrow, 44px phase rail on touch, #now
+     wraps (RESTORE ROOM never clips), tappable TV dots / mode name, kid-safe
+     tooltip, prefers-reduced-motion. (Matches app.js v2.44.)
+     v2.0 "Grown-up Design": lens bar, mode header, toggle rows, phase rail,
+     Play sections, tabbed settings, context menu (see UX-REDESIGN-2.md) */
+  :root{--bg:#0b0c10;--bg2:#13151b;--panel:#171922;--panel2:#1d2029;--panel3:#23262f;
+    --ink:#e8e6df;--dim:#a7a499;--faint:#8a8d99;--line:#2a2d38;
+    --gold:#c9a35e;--gold2:#e3c489;--teal:#5ec8c8;--green:#73c990;--red:#e0655f;
+    --accent:#c9a35e;--ease:cubic-bezier(.25,.7,.3,1)}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:radial-gradient(1500px 900px at 78% -12%,#1a1c26 0,#0b0c10 55%);
+    color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;overflow:hidden}
+  button{font-family:inherit;color:inherit;cursor:pointer;border:none;background:none}
+  input,select{font-family:inherit}
+  a{color:var(--gold2);text-decoration:none}
+  .btn{padding:9px 15px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:13px;white-space:nowrap;transition:all .18s var(--ease)}
+  .btn:hover{background:var(--panel3);border-color:#3a3e4c}
+  .btn.p{background:linear-gradient(180deg,var(--gold2),var(--gold));color:#1a1407;font-weight:700;border:none}
+  .btn.p:hover{filter:brightness(1.08)}
+  .btn.gh{background:none} .btn.sm{padding:6px 11px;font-size:12px} .btn.dg{border-color:var(--red);color:#f0a09a}
+  .btn.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.1)}
+  .zt{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--faint);margin:0 0 10px}
+  .sp{flex:1}
+
+  /* ---------- header ---------- */
+  #hdr{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line)}
+  .mark{width:30px;height:30px;border-radius:9px;background:radial-gradient(circle at 30% 25%,var(--gold2),var(--gold) 60%,#7a5e2c);box-shadow:0 0 16px rgba(201,163,94,.45)}
+  #hdr h1{font-family:Georgia,serif;font-size:16px;margin:0;letter-spacing:.4px}
+  #hdr .sub{font-size:9px;letter-spacing:1.8px;text-transform:uppercase;color:var(--faint)}
+  #spaces{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px}
+  #spaces button{padding:9px 22px;border-radius:9px;font-size:13px;letter-spacing:.6px;color:var(--dim);transition:all .2s var(--ease)}
+  #spaces button.on{background:linear-gradient(180deg,var(--gold2),var(--gold));color:#1a1407;font-weight:700}
+  /* v2.54: Design is a guarded destination — smaller ghost button; hold 600ms to enter from Play */
+  #spaces button[data-space="design"]:not(.on){padding:9px 13px;font-size:11.5px;color:var(--faint);opacity:.85}
+  #gear,#calbtn{font-size:17px;padding:8px 11px;border-radius:10px;border:1px solid var(--line);background:var(--panel);cursor:pointer}
+  /* v1.80 calendar sheet */
+  .calmons{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  .calmon{position:relative;aspect-ratio:16/10;border:1px solid var(--line);border-radius:10px;background-size:cover;background-position:center;background-color:#14161d;cursor:pointer;overflow:hidden;transition:border-color .15s}
+  .calmon:hover{border-color:var(--gold)}
+  .calmon.now{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold)}
+  .calmon .sh{position:absolute;inset:0;background:linear-gradient(180deg,rgba(8,9,12,.15),rgba(8,9,12,.78))}
+  .calmon .mn{position:absolute;left:8px;top:6px;font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:#d9dce4;text-shadow:0 1px 3px #000}
+  .calmon .md{position:absolute;left:8px;bottom:6px;right:8px;font-size:11.5px;color:var(--gold2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 3px #000}
+  .calmon .dots{position:absolute;right:7px;top:7px;display:flex;gap:3px}
+  .calmon .dots i{width:6px;height:6px;border-radius:50%;background:var(--gold)}
+  .daybar{display:flex;height:38px;border-radius:9px;overflow:hidden;border:1px solid var(--line)}
+  .daybar .seg{position:relative;display:flex;align-items:center;justify-content:center;font-size:10px;letter-spacing:.4px;color:#0d0e12;font-weight:600;white-space:nowrap;overflow:hidden;min-width:0}
+  .dayticks{display:flex;justify-content:space-between;font-size:9.5px;color:var(--faint);margin-top:3px;padding:0 1px}
+  #gear:hover{border-color:var(--gold)}
+  #hdot{width:9px;height:9px;border-radius:50%;background:#555;transition:background .3s}
+  #hdot.ok{background:var(--green);box-shadow:0 0 8px rgba(115,201,144,.6)}
+
+  /* ---------- now playing bar ---------- */
+  #now{display:flex;align-items:center;gap:14px;padding:9px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap; /* v2.44 QW10: a 5-phase mode must never push RESTORE ROOM off-screen */
+    background:linear-gradient(90deg,rgba(201,163,94,.07),transparent 45%);transition:background .6s}
+  #now .thumb{width:58px;height:36px;border-radius:8px;background:#0c0d12 center/cover no-repeat;border:1px solid rgba(255,255,255,.12);flex:0 0 auto}
+  #now .nm{font-family:Georgia,serif;font-size:16px;cursor:pointer} /* v2.44 QW7: tap → mode dashboard */
+  #now .ph{font-size:11px;color:var(--faint);letter-spacing:1px;text-transform:uppercase;margin-top:1px}
+  #now .stat{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim)}
+  /* v1.70 automations */
+  #autochip{border:1px solid var(--line);background:rgba(23,25,34,.7);color:var(--dim);border-radius:999px;padding:6px 12px;font-size:11.5px;cursor:pointer;letter-spacing:.3px;white-space:nowrap}
+  #autochip.held{color:var(--gold2);border-color:var(--gold)}
+  .socialbtn{position:relative;border:1px solid var(--line);background:rgba(23,25,34,.75);color:var(--ink);border-radius:14px;padding:12px 18px;font-size:14px;cursor:pointer;display:flex;gap:8px;align-items:center;transition:transform .12s,border-color .2s;overflow:hidden}
+  .socialbtn:active{transform:scale(.94)}
+  .socialbtn .ic{font-size:19px}
+  .socialbtn.cool{pointer-events:none;opacity:.55}
+  .socialbtn.cool::after{content:'';position:absolute;left:0;bottom:0;height:2px;background:var(--gold);animation:socialcool 1.5s linear forwards}
+  @keyframes socialcool{from{width:100%}to{width:0}}
+  #cuewrap .cuebox{border:1px solid var(--gold);border-radius:14px;background:rgba(28,26,20,.8);padding:12px 14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  #cuewrap .cur{flex:1;min-width:240px;font:400 14px Georgia,serif;color:#efe9da;line-height:1.45}
+  #cuewrap .nxt{flex:1;min-width:200px;font-size:11.5px;color:var(--faint);line-height:1.4}
+  .tvdots{display:flex;gap:4px}
+  .tvdots i{width:8px;height:8px;border-radius:50%;background:#3a3e4c;transition:background .4s}
+  .tvdots i.on{background:var(--green)}
+  #vol{width:130px;accent-color:var(--gold)}
+  .tgl{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);padding:7px 12px;border:1px solid var(--line);border-radius:20px;transition:all .2s}
+  .tgl.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.1)}
+  #panic{flex:none;background:linear-gradient(180deg,#e0655f,#b64840);color:#fff;font-weight:800;letter-spacing:1px;padding:10px 18px;border-radius:11px;font-size:12.5px;box-shadow:0 4px 14px rgba(224,101,95,.3)} /* v2.44 QW10: never clips */
+  #panic:hover{filter:brightness(1.1)}
+
+  /* ---------- views ---------- */
+  #views{position:relative;height:calc(100vh - 116px)}
+  .view{position:absolute;inset:0;overflow-y:auto;padding:20px 24px;opacity:0;pointer-events:none;visibility:hidden;transform:translateY(8px);transition:opacity .22s var(--ease),transform .22s var(--ease),visibility 0s .25s}
+  .view.on{opacity:1;pointer-events:auto;visibility:visible;transform:none;transition:opacity .22s var(--ease),transform .22s var(--ease)}
+  .view::-webkit-scrollbar{width:9px}.view::-webkit-scrollbar-thumb{background:#2b2f3c;border-radius:8px}
+
+  /* ---------- PLAY ---------- */
+  #vplay .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;max-width:1750px;margin:0 auto}
+  .pcard{position:relative;aspect-ratio:16/10;border-radius:16px;overflow:hidden;border:1px solid var(--line);
+    background:var(--panel2) center/cover no-repeat;cursor:pointer;display:flex;align-items:flex-end;
+    transition:transform .25s var(--ease),border-color .25s,box-shadow .25s}
+  .pcard::before{content:'';position:absolute;inset:0;background:inherit;background-size:cover;transition:transform 9s ease}
+  .pcard>*{position:relative}
+  .pcard:hover{transform:translateY(-4px);border-color:var(--gold2);box-shadow:0 14px 34px rgba(0,0,0,.5)}
+  .pcard:hover::before{transform:scale(1.08)}
+  .pcard:active{transform:translateY(-1px) scale(.99)}
+  .pcard .shade{position:absolute;inset:0;background:linear-gradient(rgba(8,9,12,.02) 40%,rgba(8,9,12,.85))}
+  .pcard .nm{font-family:Georgia,serif;font-size:19px;padding:14px 16px 4px;text-shadow:0 1px 8px #000}
+  .pcard .ds{font-size:11.5px;color:#cfcaba;padding:0 16px 14px;text-shadow:0 1px 5px #000;min-height:16px}
+  .pcard .livebdg{position:absolute;top:10px;right:10px;font-size:10px;letter-spacing:1.4px;font-weight:800;
+    padding:5px 10px;border-radius:14px;background:var(--accent);color:#10120a;opacity:0;transform:scale(.8);transition:all .3s var(--ease)}
+  .pcard.live{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent),0 12px 30px rgba(0,0,0,.45)}
+  .pcard.live .livebdg{opacity:1;transform:none}
+  @keyframes ripple{0%{filter:brightness(1)}35%{filter:brightness(1.7) saturate(1.25)}100%{filter:brightness(1)}}
+  .pcard.rip{animation:ripple .9s var(--ease)}
+  /* v2.44 QW2: always-visible ▶ instant-play chip (bottom-right of every card) */
+  .pplay{position:absolute;right:10px;bottom:10px;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--gold);background:rgba(10,11,15,.62);color:var(--gold2);font-size:13px;z-index:2;transition:background .15s,color .15s,transform .15s}
+  .pplay:hover{background:var(--gold);color:#1a1407;transform:scale(1.08)}
+  /* v2.44 exec4: ★ favourite marker (long-press a card to toggle) */
+  .pfav{position:absolute;top:8px;left:10px;font-size:15px;color:var(--gold2);text-shadow:0 1px 4px #000;z-index:2}
+  /* v2.44 QW5: sticky at the bottom of the scrolling .view — with 133 modes the room
+     controls were below the entire wall of cards; now cards scroll under them */
+  #roomrow{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:1750px;margin:26px auto 0;padding:16px;border:1px solid var(--line);border-top:1px solid var(--line);border-radius:16px;background:rgba(15,17,22,.88);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+  .rbig{display:flex;flex-direction:column;align-items:center;gap:6px;min-width:96px;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--dim);transition:all .2s}
+  .rbig:hover{border-color:var(--gold);color:var(--ink)}
+  .rbig .ic{font-size:21px}
+  #phasebtn{display:none;margin-left:auto;padding:14px 22px;border-radius:14px;font-size:14px;font-weight:700;
+    background:linear-gradient(180deg,var(--panel3),var(--panel2));border:1px solid var(--accent);color:var(--gold2)}
+  #phasebtn.show{display:block}
+  #lightsPop,#screensPop{position:absolute;z-index:30;background:#14161d;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 20px 50px rgba(0,0,0,.6);display:none;width:300px}
+  #lightsPop.on,#screensPop.on{display:block}
+  #lightsPop .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
+  #screensPop{width:290px}
+  .screenrow{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .screenrow .sfid{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--gold2);min-width:52px}
+  .screenrow .sfid i{width:8px;height:8px;border-radius:50%;background:var(--line)}
+  .screenrow .sfid i.on{background:#5bd66b;box-shadow:0 0 6px #5bd66b}
+  .screenrow .sfst{flex:1;font-size:11px;color:var(--dim);text-transform:capitalize}
+  .edgerow{padding:9px 0;border-top:1px solid var(--line)}
+  .edgerow:first-child{border-top:0}
+  .er-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .er-h b{font-size:12.5px;color:var(--gold2)}
+  .er-st{font-size:11px;color:var(--dim)}
+  .er-off{color:#e8886f}
+  .er-bar{height:8px;border-radius:5px;background:var(--panel2);overflow:hidden;margin:7px 0 6px}
+  .er-bar i{display:block;height:100%;width:0;background:var(--gold);transition:width .5s ease}
+  .er-bar i.on{background:linear-gradient(90deg,var(--gold),var(--gold2));animation:erpulse 1.4s ease-in-out infinite}
+  @keyframes erpulse{0%,100%{opacity:.7}50%{opacity:1}}
+  .scrnrow{display:flex;gap:10px;flex-wrap:wrap}
+  .scrntile{width:118px;padding:12px 10px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);text-align:center;cursor:grab;user-select:none}
+  .scrntile:active{cursor:grabbing}
+  .scrntile.drop{border-color:var(--gold);background:#2a2f1f}
+  .scrntile .sfrm{font-size:20px;font-weight:700;color:var(--gold2)}
+  .scrntile .sonm{font-size:10.5px;color:var(--dim);margin-top:3px;word-break:break-all}
+  .scrntile .sstat{font-size:10px;margin-top:5px}
+  .scrntile .sstat.on{color:#5bd66b}
+  .scrntile .sstat.off{color:#e8886f}
+  .chip{padding:6px 12px;border-radius:16px;border:1px solid var(--line);background:var(--panel2);font-size:11.5px;color:var(--dim)}
+  .chip:hover{border-color:var(--gold);color:var(--gold2)}
+
+  /* ---------- DESIGN ---------- */
+  #vdesign{display:flex;flex-direction:column;gap:14px;padding-bottom:12px}
+  #strip{display:flex;gap:10px;overflow-x:auto;padding:2px 2px 6px;flex:0 0 auto}
+  #strip::-webkit-scrollbar{height:8px}#strip::-webkit-scrollbar-thumb{background:#2b2f3c;border-radius:8px}
+  .scard{position:relative;flex:0 0 150px;aspect-ratio:16/9;border-radius:12px;overflow:hidden;border:1px solid var(--line);
+    background:var(--panel2) center/cover no-repeat;cursor:pointer;display:flex;align-items:flex-end;transition:all .2s var(--ease)}
+  .scard:hover{border-color:var(--gold2)}
+  .scard.sel{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold)}
+  .scard .shade{position:absolute;inset:0;background:linear-gradient(rgba(8,9,12,.04) 45%,rgba(8,9,12,.85))}
+  .scard .nm{position:relative;font-size:12px;padding:7px 9px;text-shadow:0 1px 5px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  @keyframes dirtypulse{0%,100%{box-shadow:0 0 0 2px var(--gold)}50%{box-shadow:0 0 0 2px var(--gold),0 0 18px rgba(201,163,94,.7)}}
+  .scard.dirty{animation:dirtypulse 2.2s ease-in-out infinite}
+  .scard.add{align-items:center;justify-content:center;color:var(--dim);font-size:12.5px;background:var(--panel)}
+  #dmain{display:grid;grid-template-columns:1fr 330px;gap:16px;flex:1 1 auto;min-height:0}
+  #canvaswrap{display:flex;flex-direction:column;min-width:0}
+  #walls{display:grid;grid-template-columns:1fr 1fr;gap:26px;flex:1;align-content:start;min-width:0}
+  .wlab{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--faint);text-align:center;margin-bottom:6px}
+  .wrow{display:flex;gap:10px;justify-content:center}
+  /* v1.82: frames are width-flexed BUT height-capped to the viewport, so on short/wide
+     screens they scale down instead of overflowing into the tray */
+  .fr{flex:1 1 0;min-width:0;max-width:calc((100vh - 330px) * 0.5625);aspect-ratio:9/16;border-radius:9px;overflow:hidden;border:2px solid #0a0b0f;
+    box-shadow:0 8px 22px rgba(0,0,0,.5);background:#0c0d12;position:relative;cursor:pointer;transition:box-shadow .2s,border-color .2s}
+  .fr>.inner{width:100%;height:100%}
+  .fr .badge{position:absolute;top:6px;left:6px;font-size:9px;letter-spacing:1px;background:rgba(0,0,0,.55);color:var(--gold2);padding:2px 7px;border-radius:6px;z-index:9;display:flex;align-items:center;gap:5px}
+  .fr .badge i{width:6px;height:6px;border-radius:50%;background:#4a4e5c;display:inline-block}
+  .fr .badge i.on{background:var(--green)}
+  @keyframes selbreathe{0%,100%{box-shadow:0 0 0 2px var(--gold),0 8px 22px rgba(0,0,0,.5)}50%{box-shadow:0 0 0 3px var(--gold2),0 0 20px rgba(201,163,94,.5)}}
+  .fr.sel{border-color:var(--gold);animation:selbreathe 2.6s ease-in-out infinite}
+  .fr.droptarget{border-color:var(--teal);box-shadow:0 0 0 2px var(--teal)}
+  /* inspector */
+  #insp{overflow-y:auto;border:1px solid var(--line);border-radius:16px;background:rgba(23,25,34,.55);padding:16px;min-height:0}
+  #insp::-webkit-scrollbar{width:8px}#insp::-webkit-scrollbar-thumb{background:#2b2f3c;border-radius:8px}
+  #insp h2{font-family:Georgia,serif;font-size:15px;margin:0 0 3px;border-bottom:2px solid var(--accent);display:inline-block;padding-bottom:3px}
+  #insp .ctx{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--faint);margin-bottom:14px}
+  .fld{margin:0 0 12px}.fld>span{display:block;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+  input[type=text],input[type=number],input[type=password],select{width:100%;padding:8px 9px;border-radius:8px;background:#13151b;color:var(--ink);border:1px solid var(--line);font-size:13px}
+  input[type=color]{width:44px;height:32px;border:1px solid var(--line);border-radius:8px;background:#13151b;padding:2px;vertical-align:middle}
+  input[type=range]{width:100%;accent-color:var(--gold)}
+  .r2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.r3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .chk{display:flex;align-items:center;gap:8px;font-size:13px;color:#cbd0db;margin:4px 0 12px;cursor:pointer}
+  /* ⓘ help tips (v1.4) — hover or tap the dot */
+  .tip{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-left:6px;border-radius:50%;background:#2b2f3c;border:1px solid #3a3f4e;color:#9aa1b0;font:600 9px/1 sans-serif;font-style:normal;cursor:help;position:relative;vertical-align:middle;flex:none;letter-spacing:0}
+  .tip:focus{outline:none;border-color:var(--gold)}
+  /* v1.81: tooltip body floats at viewport level (JS-positioned) — never clipped by the
+     inspector's scroll box or hidden under canvas frames */
+  #tipfly{position:fixed;width:244px;background:#1c1f29;border:1px solid #3a3f4e;color:#d6dae3;font:400 11.5px/1.45 system-ui,sans-serif;letter-spacing:.2px;text-transform:none;padding:9px 11px;border-radius:9px;z-index:2000;box-shadow:0 12px 30px rgba(0,0,0,.6);text-align:left;white-space:normal;pointer-events:none;opacity:0;transition:opacity .13s}
+  #tipfly.on{opacity:1}
+  details.adv{border:1px solid var(--line);border-radius:12px;padding:0;margin:0 0 12px;background:var(--panel)}
+  details.adv>summary{cursor:pointer;padding:10px 12px;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--dim);list-style:none;display:flex;align-items:center;gap:8px}
+  details.adv>summary::before{content:'▸';transition:transform .2s;color:var(--gold)}
+  details.adv[open]>summary::before{transform:rotate(90deg)}
+  details.adv>.body{padding:2px 12px 12px}
+  .typetiles{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:12px}
+  .tile{padding:9px 4px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);text-align:center;transition:all .15s}
+  .tile:hover{background:var(--panel3)} .tile.on{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold)}
+  .tile .ic{font-size:17px;display:block;margin-bottom:3px}.tile .lb{font-size:9.5px;color:var(--dim)}
+  .selchips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .selchips .chip.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.12)}
+  /* media tray */
+  /* v1.83: tray retired — everything it did lives in the inspector's picker sheets
+     (scene/overlay/effect/album). Markup kept dormant in case drag-drop returns. */
+  #tray{display:none !important}
+  #tray-legacy-flex{flex:0 0 auto;border:1px solid var(--line);border-radius:16px;background:rgba(23,25,34,.55);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  #tray.closed #trayitems,#tray.closed #traycats{display:none !important}
+  #traytgl{margin-left:auto;border:1px solid var(--line);background:var(--panel);color:var(--dim);border-radius:8px;padding:5px 12px;font-size:11.5px;cursor:pointer;white-space:nowrap}
+  #traytgl:hover{color:var(--gold2);border-color:var(--gold)}
+  #trayhdr{display:flex;align-items:center;gap:10px}
+  #trayseg{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px}
+  #trayseg button,#traykind button{padding:6px 13px;border-radius:7px;font-size:11.5px;color:var(--dim)}
+  #trayseg button.on,#traykind button.on{background:var(--panel3);color:var(--gold2)}
+  #traysearch{width:200px;padding:7px 10px;border-radius:8px;background:#13151b;border:1px solid var(--line);color:var(--ink);font-size:12px}
+  #trayhint{font-size:10.5px;color:var(--faint)}
+  #trayitems{display:flex;gap:9px;overflow-x:auto;padding-bottom:4px;flex:1}
+  #trayitems::-webkit-scrollbar{height:8px}#trayitems::-webkit-scrollbar-thumb{background:#2b2f3c;border-radius:8px}
+  .titem{flex:0 0 118px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel2);cursor:pointer;position:relative;transition:all .15s}
+  .titem:hover{border-color:var(--gold2);transform:translateY(-2px)}
+  .titem img,.titem .ph{width:100%;height:64px;object-fit:cover;display:block;background:#0c0d12}
+  .titem .ph{display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--teal)}
+  .titem .cap{font-size:9.5px;color:var(--dim);padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .titem.checker img{object-fit:contain;background-image:linear-gradient(45deg,#333 25%,transparent 25%),linear-gradient(-45deg,#333 25%,transparent 25%);background-size:14px 14px}
+  /* save bar */
+  #savebar{display:flex;align-items:center;gap:12px;padding:12px 16px;border:1px solid var(--line);border-radius:16px;background:rgba(23,25,34,.75);flex:0 0 auto;transform:translateY(70px);opacity:0;transition:all .28s var(--ease)}
+  #savebar.show{transform:none;opacity:1}
+  #savebar .dirtynote{font-size:12px;color:var(--gold2)}
+  @keyframes savedflash{0%{background:rgba(115,201,144,.25)}100%{background:rgba(23,25,34,.75)}}
+  #savebar.saved{animation:savedflash 1.2s ease}
+  #pvw{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim);padding:9px 14px;border:1px solid var(--line);border-radius:22px;cursor:pointer;transition:all .2s}
+  #pvw.on{border-color:var(--red);color:#f0a09a;background:rgba(224,101,95,.1)}
+  #pvw .dot{width:9px;height:9px;border-radius:50%;background:#4a4e5c}
+  #pvw.on .dot{background:var(--red);box-shadow:0 0 8px rgba(224,101,95,.8);animation:dirtypulse 1.6s infinite}
+
+  /* ---------- modal / sheet ---------- */
+  .scrim{position:fixed;inset:0;background:rgba(6,7,10,.72);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:40}
+  .scrim.on{display:flex}
+  .sheet{width:min(1000px,94vw);max-height:90vh;background:#12141a;border:1px solid var(--line);border-radius:18px;box-shadow:0 30px 80px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden;animation:sheetin .25s var(--ease)}
+  @keyframes sheetin{from{opacity:0;transform:translateY(16px) scale(.985)}to{opacity:1;transform:none}}
+  .shead{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .shead h2{font-family:Georgia,serif;font-size:17px;margin:0}
+  .sbody{flex:1;overflow-y:auto;padding:18px}
+  .sbody::-webkit-scrollbar{width:9px}.sbody::-webkit-scrollbar-thumb{background:#2b2f3c;border-radius:8px}
+  .card{border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 14px;background:var(--panel)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .cell{border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel2);cursor:pointer;position:relative}
+  .cell:hover{border-color:var(--gold2)} .cell.on{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold)}
+  .cell img{width:100%;aspect-ratio:16/10;object-fit:cover;display:block;background:#0c0d12}
+  .cell .cap{font-size:10.5px;color:var(--dim);padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(46px);opacity:0;transition:.3s var(--ease);background:var(--panel3);border:1px solid var(--gold);padding:11px 20px;border-radius:13px;font-size:13px;z-index:60}
+  .toast.on{transform:translateX(-50%);opacity:1}
+  .hint{font-size:11px;color:var(--faint)}
+
+  /* ---------- v2.0: Play section chips + grouped grid ---------- */
+  /* v2.54: the chip row scrolls horizontally with an edge fade (CSS mask) instead of
+     wrapping into a chip cloud, and carries the 🔍 search field at its start (44px). */
+  #pcats{display:flex;gap:8px;flex-wrap:nowrap;align-items:center;max-width:1750px;margin:0 auto 14px;overflow-x:auto;padding:2px;
+    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 16px,#000 calc(100% - 28px),transparent 100%);
+    mask-image:linear-gradient(90deg,transparent 0,#000 16px,#000 calc(100% - 28px),transparent 100%)}
+  #pcats::-webkit-scrollbar{height:0}
+  #pcats .chip{padding:8px 15px;font-size:12.5px;border-radius:20px;flex:none;min-height:44px}
+  #pcats .chip.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.12)}
+  #pcsearch{flex:none;width:210px;min-height:44px;padding:8px 15px;border-radius:22px;background:#13151b;border:1px solid var(--line);color:var(--ink);font-size:13px}
+  #pcsearch:focus{outline:none;border-color:var(--gold)}
+  .psec{max-width:1750px;margin:0 auto 6px}
+  /* v2.01 — animated reflow when Play filters change (FLIP + enter/exit) */
+  @keyframes cardin{from{opacity:0;transform:translateY(16px) scale(.95)}to{opacity:1;transform:none}}
+  .pcard.enter{animation:cardin .4s var(--ease) both}
+  #pcards.anim .psec .zt{animation:cardin .3s var(--ease) both}
+  .pghost{position:fixed;z-index:5;pointer-events:none;border-radius:16px;background:#14161d center/cover no-repeat;border:1px solid var(--line);opacity:1;transition:opacity .26s ease,transform .26s ease}
+  .psec .zt{margin:18px 0 10px}
+  .psec:first-of-type .zt{margin-top:0}
+
+  /* ---------- v2.0: phase rail (Now Playing bar) ---------- */
+  /* v2.44 QW10: long phase lists scroll instead of squeezing the bar.
+     v2.88: they scroll SILENTLY — the native bar sat under the chips and was the
+     "ugly scrollbar" on any mode with 4+ phases. Same treatment as #pcats: hidden
+     bar, same as #pcats. No edge-fade mask here: the rail shrink-wraps its content,
+     so a mask would dim the tail of the gold "next phase" button even when the row
+     fits. Cap raised to 46vw/720px so 4-5 phases stop overflowing at all. */
+  #phaserail{display:none;align-items:center;gap:6px;overflow-x:auto;max-width:min(46vw,720px);scrollbar-width:none;-ms-overflow-style:none}
+  #phaserail::-webkit-scrollbar{height:0}
+  #phaserail.show{display:flex}
+  #phaserail .pdot{display:flex;align-items:center;gap:5px;padding:6px 11px;border-radius:16px;border:1px solid var(--line);background:rgba(23,25,34,.7);font-size:11.5px;color:var(--dim);cursor:pointer;white-space:nowrap;transition:all .2s}
+  #phaserail .pdot:hover{border-color:var(--gold)}
+  #phaserail .pdot.on{border-color:var(--accent);color:var(--gold2);background:rgba(201,163,94,.12)}
+  #phaserail .pnext{padding:7px 14px;border-radius:16px;border:1px solid var(--accent);color:var(--gold2);background:linear-gradient(180deg,var(--panel3),var(--panel2));font-size:12px;font-weight:700;white-space:nowrap}
+
+  /* ---------- v2.0: Design mode header + lens bar ---------- */
+  #mhdr{display:flex;align-items:center;gap:12px;flex:0 0 auto;padding:2px 2px 0}
+  #mhdr input[type=text]{width:230px;font-family:Georgia,serif;font-size:16px;background:transparent;border:1px solid transparent;padding:6px 8px;border-radius:8px}
+  #mhdr input[type=text]:hover,#mhdr input[type=text]:focus{border-color:var(--line);background:#13151b;outline:none}
+  #mhdr select{width:auto;min-width:120px}
+  #mhdr .mlab{font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint)}
+  #lensbar{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px;flex:0 0 auto;align-self:flex-start}
+  #lensbar button{padding:8px 18px;border-radius:9px;font-size:12.5px;color:var(--dim);transition:all .2s var(--ease)}
+  #lensbar button.on{background:var(--panel3);color:var(--gold2);box-shadow:inset 0 0 0 1px var(--gold)}
+  /* v3.08 🎬 Intro lens */
+  #intromain{margin:14px 0 6px;border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:16px 18px;animation:fadeup .3s var(--ease)}
+  #intromain h2{margin-top:0}
+  .incuegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:9px;align-items:start}
+  #intromain .intl{height:46px}
+  #intromain .intl .idot{top:16px}
+  #intromain .inadd{grid-template-columns:repeat(5,1fr)}
+  #intromain .inadd button[data-inadd="frames"]{grid-column:auto}
+  @keyframes fadeup{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .intl{position:relative;height:34px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin:10px 0 14px;overflow:hidden}
+  .intl .idot{position:absolute;top:10px;width:12px;height:12px;border-radius:50%;border:2px solid var(--bg);transition:left .25s var(--ease)}
+  .intl .idot.snd{background:var(--gold)} .intl .idot.scr{background:var(--teal)} .intl .idot.lgt{background:var(--green)} .intl .idot.vox{background:#9d8cff} .intl .idot.frm{background:var(--red)}
+  .intl .iend{position:absolute;top:4px;bottom:4px;width:2px;background:rgba(115,201,144,.6)}
+  .intl .iph{position:absolute;top:0;bottom:0;width:2px;background:var(--gold2);box-shadow:0 0 8px rgba(227,196,137,.8);opacity:0}
+  .incue{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:9px 10px;margin-bottom:8px}
+  .incue.hot{border-color:var(--gold);box-shadow:0 0 12px rgba(201,163,94,.3)}
+  .incue .tch{flex:none;width:66px;text-align:center}
+  .incue .tch .t{font-family:Georgia,serif;font-size:15px;color:var(--gold2)}
+  .incue .tch .nud{display:flex;justify-content:center;gap:3px;margin-top:2px}
+  .incue .tch .nud button{width:26px;height:20px;border-radius:6px;border:1px solid var(--line);background:var(--panel3);color:var(--dim);font-size:10px;cursor:pointer;padding:0}
+  .incue .tch .nud button:hover{color:var(--gold2);border-color:var(--gold)}
+  .incue .ibody{flex:1;min-width:0}
+  .incue .ibody select,.incue .ibody input[type=number]{max-width:100%;margin-top:3px}
+  .incue .isum{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .inchain{flex:none;font-size:9.5px;border-radius:8px;border:1px solid var(--line);color:var(--faint);background:transparent;padding:3px 6px;cursor:pointer}
+  .inchain.on{color:var(--teal);border-color:var(--teal)}
+  .incue .iact{display:flex;flex-direction:column;gap:4px;flex:none}
+  .incue .iact button{width:28px;height:28px;border-radius:50%;border:1px solid var(--line);background:var(--panel3);color:var(--dim);cursor:pointer;font-size:11px;padding:0}
+  .incue .iact button:hover{border-color:var(--gold);color:var(--gold2)}
+  .inadd{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin:10px 0 14px}
+  .inadd button{border:1px dashed var(--line);border-radius:11px;background:transparent;color:var(--dim);padding:11px 6px;font-size:12px;cursor:pointer}
+  .inadd button:hover{border-color:var(--gold);color:var(--gold2)}
+  #introov{position:fixed;inset:0;z-index:70;background:rgba(6,7,10,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+  #introov .mn{font-family:Georgia,serif;font-size:30px;color:var(--gold2);letter-spacing:1px}
+  #introov .cap{font-size:10.5px;letter-spacing:2.5px;text-transform:uppercase;color:var(--faint)}
+  #introov .pb{width:min(420px,70vw);height:4px;border-radius:2px;background:var(--panel3);overflow:hidden}
+  #introov .pb i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold),var(--gold2))}
+  .fr .abadge{position:absolute;bottom:6px;left:6px;right:6px;display:flex;gap:4px;flex-wrap:wrap;z-index:9}
+  .fr .abadge span{font-size:9.5px;background:rgba(0,0,0,.6);border:1px solid rgba(201,163,94,.4);color:var(--gold2);padding:2px 6px;border-radius:6px}
+
+  /* ---------- v2.0: toggle rows (checkbox stacks, grown up) ---------- */
+  .trow{display:flex;align-items:flex-start;gap:11px;width:100%;padding:10px 4px;border:0;border-bottom:1px solid rgba(42,45,56,.55);cursor:pointer;text-align:left;min-height:44px}
+  .trow:last-of-type{border-bottom:0}
+  .trow .tsw{flex:0 0 34px;height:20px;border-radius:12px;background:#2b2f3c;position:relative;transition:background .2s;margin-top:1px}
+  .trow .tsw::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#8a8d99;transition:all .2s}
+  .trow.on .tsw{background:var(--gold)}
+  .trow.on .tsw::after{left:16px;background:#1a1407}
+  .trow .tt{font-size:13px;color:var(--ink)}
+  .trow .td{font-size:11px;color:var(--faint);margin-top:2px;line-height:1.4}
+  .tgroup{margin:0 0 14px}
+
+  /* ---------- v2.0: phase editor (Behaviour lens) ---------- */
+  .phrail{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .phchip{padding:7px 13px;border-radius:16px;border:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--dim);cursor:pointer}
+  .phchip.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.12)}
+  .phbox{border:1px solid var(--gold);border-radius:12px;padding:11px;margin-bottom:12px;background:rgba(201,163,94,.05)}
+
+  /* ---------- v2.0: strip context menu + hidden modes + LIVE ---------- */
+  #ctxmenu{position:fixed;z-index:70;background:#171922;border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 44px rgba(0,0,0,.65);padding:6px;display:none;min-width:180px}
+  #ctxmenu.on{display:block}
+  #ctxmenu button{display:block;width:100%;text-align:left;padding:9px 12px;border-radius:8px;font-size:12.5px;color:var(--ink)}
+  #ctxmenu button:hover{background:var(--panel3)}
+  #ctxmenu button.dg{color:#f0a09a}
+  .scard.hid{opacity:.5}
+  .scard .hidtag{position:absolute;top:6px;left:6px;font-size:8.5px;letter-spacing:1px;background:rgba(0,0,0,.6);color:var(--dim);padding:2px 6px;border-radius:6px}
+  .scard .livetag{position:absolute;top:6px;right:6px;font-size:8.5px;letter-spacing:1.2px;font-weight:800;background:var(--red);color:#fff;padding:2px 7px;border-radius:8px}
+  .scard.add{border:1.5px dashed var(--gold);color:var(--gold2);flex:0 0 96px;font-weight:600}
+  .scard.add:hover{background:rgba(201,163,94,.08)}
+  .sdivide{flex:0 0 auto;align-self:center;font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--faint);writing-mode:vertical-rl;transform:rotate(180deg);padding:6px 2px;border-right:1px solid var(--line);margin:0 2px}
+
+  /* ---------- v2.0: tabbed settings sheet ---------- */
+  #settabs{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:3px;gap:3px;margin:0 0 16px}
+  #settabs button{flex:1;padding:9px;border-radius:8px;font-size:12.5px;color:var(--dim)}
+  #settabs button.on{background:var(--panel3);color:var(--gold2)}
+  .setsec{display:none}.setsec.on{display:block}
+
+  /* ---------- v2.10: Play tabs (Modes / Music / Lights) ---------- */
+  #playtabs{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px;width:max-content;margin:0 auto 18px}
+  #playtabs button{padding:10px 30px;border-radius:9px;font-size:13.5px;color:var(--dim);transition:all .2s var(--ease)}
+  #playtabs button.on{background:linear-gradient(180deg,var(--gold2),var(--gold));color:#1a1407;font-weight:700}
+  .ptab{display:none}.ptab.on{display:block}
+  /* ---- v3.40 🎉 Games tab (mirrors GAMES-TAB-MOCKUP.html) ---- */
+  .gmgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+  .gmcard{border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:16px;cursor:pointer;transition:all .2s var(--ease);text-align:left}
+  .gmcard:hover{border-color:var(--gold2);transform:translateY(-3px)}
+  .gmcard .ic{font-size:30px}
+  .gmcard .nm{font-family:Georgia,serif;font-size:17px;margin:7px 0 3px}
+  .gmcard .meta{font-size:11.5px;color:var(--faint)}
+  .gmwall{display:flex;gap:14px;justify-content:center;margin:12px 0}
+  .gmwall .grp{display:flex;gap:5px}
+  .gmtv{width:52px;height:84px;border-radius:6px;border:1px solid var(--line);background:#12141a;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--faint);flex-direction:column;gap:3px;cursor:pointer;text-align:center;padding:2px}
+  .gmtv.word{border-color:var(--gold);background:rgba(201,163,94,.14);color:var(--gold2)}
+  .gmtv.guesser{border-color:var(--teal);background:rgba(94,200,200,.12);color:var(--teal)}
+  .gmtv .w{font-size:8.5px;line-height:1.2}
+  .gmcon{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start}
+  @media(max-width:900px){.gmcon{grid-template-columns:1fr}}
+  .gmword{font-family:Georgia,serif;font-size:34px;color:var(--gold2);text-align:center;padding:22px 10px;border:1px dashed var(--line);border-radius:14px;background:var(--panel2);word-break:break-word}
+  .gmtimer{font-family:Georgia,serif;font-size:42px;text-align:center;font-variant-numeric:tabular-nums}
+  .gmtimer.low{color:var(--red)}
+  .gmbrow{display:flex;gap:10px;margin-top:12px}
+  .gmbrow .btn{flex:1;font-size:17px;padding:16px}
+  .gmscores{margin:0;padding:0}
+  .gmscores li{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid rgba(42,45,56,.5);font-size:13px;list-style:none}
+  .gmscores b{color:var(--gold2)}
+  .gmscript{border-left:3px solid var(--gold);padding:9px 12px;background:var(--panel2);border-radius:0 11px 11px 0;margin-bottom:8px}
+  .gmscript .t{font-size:12.5px;font-style:italic;color:var(--gold2)}
+  .gmscript.done{border-left-color:var(--green);opacity:.55}
+  .gmrole{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--line);border-radius:11px;margin-bottom:7px;background:var(--panel2);font-size:13px}
+  .gmrole.dead{opacity:.45;text-decoration:line-through}
+  .gmfld{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--dim)}
+  .gmr2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .mwrap{max-width:1100px;margin:0 auto}
+  .nowmus{display:flex;gap:16px;align-items:center;border:1px solid var(--line);border-radius:16px;padding:16px;background:rgba(23,25,34,.6);margin-bottom:18px;flex-wrap:wrap}
+  .nowmus .art{width:86px;height:86px;border-radius:12px;background:#0c0d12 center/cover no-repeat;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:30px;color:var(--gold);flex:0 0 auto}
+  .nowmus .tt{font-family:Georgia,serif;font-size:18px}
+  .nowmus .ar{font-size:12.5px;color:var(--dim);margin-top:2px}
+  .nowmus .hchip{font-size:10.5px;letter-spacing:1px;color:var(--gold2);border:1px solid var(--gold);border-radius:12px;padding:3px 9px;margin-top:7px;display:inline-block}
+  .mbtn{width:46px;height:46px;border-radius:50%;border:1px solid var(--line);background:var(--panel2);font-size:16px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .mbtn:hover{border-color:var(--gold);color:var(--gold2)}
+  .mbtn.big{width:58px;height:58px;font-size:21px;background:linear-gradient(180deg,var(--gold2),var(--gold));color:#1a1407;border:none}
+  .plgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:12px}
+  /* v2.98: music tab pack */
+  .plsec{margin:20px 0 10px}
+  .plcard{position:relative}
+  .plcard .pin{position:absolute;top:7px;right:7px;width:30px;height:30px;border-radius:50%;background:rgba(10,11,15,.66);border:1px solid var(--line);color:var(--dim);font-size:14px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2}
+  .plcard .pin.on{color:var(--gold2);border-color:var(--gold)}
+  .modemus{display:flex;align-items:center;gap:13px;border:1px solid var(--gold);border-radius:14px;padding:11px 15px;background:rgba(201,163,94,.10);cursor:pointer;margin-bottom:4px}
+  .modemus:hover{background:rgba(201,163,94,.18)}
+  .modemus .ic{width:46px;height:46px;border-radius:10px;background:#0c0d12 center/cover no-repeat;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:19px;color:var(--gold);flex:0 0 auto}
+  .recchip{padding:7px 13px;border-radius:16px;border:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--dim);cursor:pointer;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .recchip:hover{border-color:var(--gold);color:var(--gold2)}
+  .vpre{padding:7px 11px;border-radius:12px;border:1px solid var(--line);background:var(--panel2);font-size:11.5px;color:var(--dim);cursor:pointer}
+  .vpre:hover{border-color:var(--gold);color:var(--gold2)}
+  .mbtn.tog.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.14)}
+  .upnext{font-size:11.5px;color:var(--dim);margin:-10px 0 18px;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .plcard{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel2);cursor:pointer;transition:all .2s var(--ease)}
+  .plcard:hover{border-color:var(--gold2);transform:translateY(-3px)}
+  .plcard .art{aspect-ratio:1.6;background:#12141a center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:34px;color:var(--gold)}
+  .plcard .nm{padding:9px 11px;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .trkrow{display:flex;align-items:center;gap:11px;padding:8px 6px;border-bottom:1px solid rgba(42,45,56,.5);cursor:pointer}
+  .trkrow:hover{background:rgba(255,255,255,.025)}
+  .trkrow .ta{width:42px;height:42px;border-radius:8px;background:#12141a center/cover no-repeat;flex:0 0 auto;display:flex;align-items:center;justify-content:center;color:var(--gold)}
+  .trkrow .tn{font-size:13px}
+  .trkrow .tar{font-size:11px;color:var(--dim)}
+  .lpgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:12px;max-width:1100px;margin:0 auto}
+  .lpcard{border:1px solid var(--line);border-radius:16px;padding:20px 14px 16px;background:var(--panel2);cursor:pointer;text-align:center;transition:all .2s var(--ease)}
+  .lpcard:hover{border-color:var(--gold2);transform:translateY(-3px)}
+  .lpcard .sw{width:54px;height:54px;border-radius:50%;margin:0 auto 12px;background:var(--swc,#c9a35e);box-shadow:0 0 26px 5px var(--swc,rgba(201,163,94,.4))}
+  .lpcard .nm{font-size:13.5px;text-transform:capitalize}
+  .lpcard .ds{font-size:10.5px;color:var(--faint);margin-top:3px}
+
+  @media (pointer:coarse){
+    .btn,.tgl,.rbig{min-height:44px}
+    #spaces button{padding:12px 26px;font-size:14px}
+    .pcard{aspect-ratio:16/11}
+    .tip{width:20px;height:20px;font-size:11px}
+    .chip,.selchips .chip{min-height:40px}
+    .tile{min-height:56px}
+    /* v2.44 QW5: the most-used mid-game controls meet the app's own 44px rule */
+    #phaserail .pdot,#phaserail .pnext,#autochip{min-height:44px}
+    #vol{width:180px}
+    .pplay{padding:5px;box-sizing:content-box} /* 34px chip + padding = 44px touch target */
+  }
+  /* v2.44 QW13: honour reduced-motion — no ripple, ken-burns, breathing or pulsing */
+  @media (prefers-reduced-motion:reduce){
+    .pcard::before,.fr.sel,.scard.dirty,.pcard.rip,#pvw.on .dot,.er-bar i.on,.socialbtn.cool::after{animation:none;transition:none}
+    .pcard.enter,#pcards.anim .psec .zt,.pghost{animation:none;transition:none}
+  }
+  /* ===== v2.76 Timer tab — live style miniatures + wall map ===== */
+  .tstyles{display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:10px}
+  .tprev{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:8px 6px 7px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;transition:all .18s var(--ease)}
+  .tprev:hover{border-color:var(--gold2)}
+  .tprev.on{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold),0 6px 18px rgba(201,163,94,.18);transform:translateY(-1px)}
+  .tpv{width:80px;height:106px;border-radius:7px;background:linear-gradient(165deg,#171a23,#0a0c12);border:1px solid #232634;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;overflow:hidden;position:relative}
+  .tpv .tplab{font-size:7px;letter-spacing:.14em;color:var(--faint);text-transform:uppercase}
+  .tpv-num{font:700 17px/1 ui-monospace,monospace;letter-spacing:1px}
+  .tpv-num.min{font-family:system-ui;font-weight:200;font-size:16px;letter-spacing:2px}
+  .tpv-num.neon{font-family:system-ui;font-weight:800;font-size:16px;text-shadow:0 0 6px currentColor,0 0 16px currentColor}
+  .tpv-flip{display:flex;gap:2px;align-items:center}
+  .tpv-flip .c{background:#1c1f2a;border-radius:3px;padding:4px 3px;font:700 11px/1 ui-monospace,monospace;box-shadow:inset 0 -6px 8px rgba(0,0,0,.5);position:relative}
+  .tpv-flip .c::after{content:'';position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(0,0,0,.55)}
+  .tpv-flip .k{font:700 11px/1 ui-monospace,monospace;opacity:.6}
+  .tpv svg{width:62px;height:62px;display:block}
+  .tpv .tpv-sub{font:600 10px/1 ui-monospace,monospace;opacity:.85}
+  .tpn{font-size:10.5px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
+  .tprev.on .tpn{color:var(--gold2)}
+  .twmap{display:flex;gap:20px;align-items:flex-end;flex-wrap:wrap}
+  .twgrp{display:flex;flex-direction:column;gap:6px}
+  .twlab{font-size:9.5px;letter-spacing:.14em;color:var(--faint);text-transform:uppercase;text-align:center}
+  .twrow{display:flex;gap:7px}
+  .twfr{width:36px;height:54px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--faint);font-size:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s var(--ease)}
+  .twfr.on{border-color:var(--gold);color:var(--gold2);background:rgba(201,163,94,.13);box-shadow:0 0 12px rgba(201,163,94,.28)}
+  .twfr.auto{opacity:.55}
+  .tbgthumb{width:38px;height:38px;border-radius:7px;background:#0d0f15 center/cover;border:1px solid var(--line);flex:none}
+  @media(pointer:coarse){.twfr{width:42px;height:62px;font-size:11px}.tprev{padding:10px 8px 9px}}
+  @media(prefers-reduced-motion:reduce){.tprev.on{transform:none}}
+
+  /* ===== v2.87 Timer tab LAYOUT — the tab was a single column of full-width
+     bars: on a 2500px desktop that is a stack of 9 stretched rows around narrow
+     centred content (dead space everywhere). It is now a capped, responsive
+     card grid like the other tabs: presets + the big face span the full width as
+     a "stage", every setting card flows into 1/2/3 columns by viewport. Portrait
+     tablets get exactly one column, i.e. the previous behaviour. ===== */
+  #ptTimer{max-width:1560px;margin:0 auto}
+  #ptTimer > .card{margin:0 0 14px}
+  /* masonry: cards pack by height instead of aligning to grid rows */
+  .tcols{columns:3 372px;column-gap:14px}
+  .tcols > .card{break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;
+    display:inline-block;width:100%;margin:0 0 14px;vertical-align:top}
+  /* the stage: face on the left, transport on the right, stacking when narrow */
+  .tbigcard{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:34px;padding:20px 22px}
+  .therof{flex:1 1 380px;max-width:620px;text-align:center}
+  .therot{flex:0 1 260px;display:flex;flex-direction:column;gap:10px;min-width:220px}
+  .therot .btn.p{height:56px;font-size:17px}
+  .therot .btn{height:46px}
+  .therow{display:flex;gap:8px}
+  .therow .btn{flex:1}
+  @media (max-width:820px){#ptTimer{grid-template-columns:1fr}.tbigcard{gap:18px}.therot{flex:1 1 100%}}
+  /* ===== v2.86 Timer feature pack — colour swatches, styled big face, drama
+     timeline, zero podium, presets, sound picker, chess clock, rounds, sand ===== */
+  #ptTimer .chips,.tchips{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+  #ptTimer .btn:disabled,#ptTimer .chip:disabled{opacity:.38;cursor:default}
+  /* the ring style's number sits IN the ring (v2.76 left it at its static position) */
+  .tpv .tpv-mid{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+  /* -- the big face on the display card (same builder as the grid miniatures) -- */
+  .tbigcard{text-align:center;padding:18px 16px 16px}
+  .tpv.big{width:100%;max-width:460px;height:212px;margin:0 auto;border:none;background:none;border-radius:0;gap:10px}
+  .tpv.big .tplab{font-size:12px;letter-spacing:.22em}
+  .tpv.big .tpv-num{font-size:64px;letter-spacing:3px}
+  .tpv.big .tpv-num.min{font-size:60px;letter-spacing:7px}
+  .tpv.big .tpv-num.neon{font-size:58px;text-shadow:0 0 16px currentColor,0 0 46px currentColor}
+  .tpv.big svg{width:172px;height:172px}
+  .tpv.big .tpv-sub{font-size:22px}
+  .tpv.big .tpv-flip{gap:6px}
+  .tpv.big .tpv-flip .c{font-size:46px;padding:13px 10px;border-radius:9px;box-shadow:inset 0 -18px 22px rgba(0,0,0,.5)}
+  .tpv.big .tpv-flip .k{font-size:42px}
+  .tchain{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:12px;flex-wrap:wrap}
+  .tchain .rd{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--gold2)}
+  .tchain .lb{font-size:12.5px;color:var(--dim)}
+  /* -- tiny face on preset tiles (baked, not tick-driven) -- */
+  .tpv.tiny{width:40px;height:54px;border-radius:5px;gap:2px}
+  .tpv.tiny .tpv-num{font-size:8.5px;letter-spacing:0}
+  .tpv.tiny .tpv-num.min,.tpv.tiny .tpv-num.neon{font-size:8px;letter-spacing:.5px;text-shadow:0 0 4px currentColor}
+  .tpv.tiny svg{width:32px;height:32px}
+  .tpv.tiny .tpv-sub{font-size:7px}
+  .tpv.tiny .tpv-flip{gap:1px}
+  .tpv.tiny .tpv-flip .c{font-size:6px;padding:2px;border-radius:2px;box-shadow:none}
+  .tpv.tiny .tpv-flip .k{font-size:6px}
+  /* -- colour swatches -- */
+  .tsws{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  /* NB .tsw is also the toggle-row switch (.trow .tsw, ~line 325) — that rule is
+     more specific so toggles keep their look, but do not add unscoped .tsw rules. */
+  .tsws .tsw{width:36px;height:36px;border-radius:50%;background:var(--tswc);border:1px solid rgba(255,255,255,.14);cursor:pointer;position:relative;flex:none;padding:0;transition:transform .16s var(--ease),box-shadow .16s var(--ease)}
+  .tsw:hover{transform:scale(1.07)}
+  .tsw.on{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--gold)}
+  .tsw.acc::after{content:'';position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--gold)}
+  .tsw.cust{display:inline-flex;align-items:center;justify-content:center;overflow:hidden;border-style:dashed}
+  .tsw.cust span{font-size:16px;font-weight:700;color:#0e1017;mix-blend-mode:luminosity;pointer-events:none}
+  .tsw.cust input[type=color]{position:absolute;inset:0;width:100%;height:100%;opacity:0;border:none;padding:0;margin:0;cursor:pointer}
+  /* -- drama timeline: right edge = 0, left edge = the full span -- */
+  .ttlwrap{padding:26px 16px 0}
+  .ttl{position:relative;height:46px}
+  .ttlbar{position:absolute;left:0;right:0;top:20px;height:6px;border-radius:3px;background:linear-gradient(90deg,#2a2d38 0,#3d3129 62%,#5a2f2c 100%)}
+  .ttl::after{content:'';position:absolute;right:-1px;top:9px;width:2px;height:28px;border-radius:2px;background:var(--red);opacity:.75}
+  .ttlm{position:absolute;top:0;transform:translateX(-50%);width:38px;height:46px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);cursor:grab;touch-action:none;z-index:2;transition:box-shadow .15s var(--ease),border-color .15s var(--ease)}
+  .ttlm .ic{font-size:14px;line-height:1}
+  .ttlm .at{font:600 8px/1 ui-monospace,monospace;color:var(--faint)}
+  .ttlm.amber{border-color:#e8a33d}
+  .ttlm.red{border-color:var(--red)}
+  .ttlm.drag{cursor:grabbing;border-color:var(--gold);box-shadow:0 0 0 2px var(--gold),0 8px 20px rgba(0,0,0,.55);z-index:3}
+  .ttllive{position:absolute;top:-25px;left:50%;transform:translateX(-50%);font:700 12px/1 ui-monospace,monospace;color:var(--gold2);background:#12141a;border:1px solid var(--gold);border-radius:7px;padding:5px 8px;opacity:0;pointer-events:none;transition:opacity .12s;z-index:4}
+  .ttllive.on{opacity:1}
+  .ttlends{display:flex;justify-content:space-between;font-size:10px;color:var(--faint);margin-top:7px}
+  /* -- preset tiles -- */
+  .tpres{display:flex;gap:10px;overflow-x:auto;padding:2px 2px 6px}
+  .tpres::-webkit-scrollbar{height:8px}.tpres::-webkit-scrollbar-thumb{background:#2b2f3c;border-radius:8px}
+  .tpretile{flex:0 0 108px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:9px 7px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;transition:all .18s var(--ease)}
+  .tpretile:hover{border-color:var(--gold2)}
+  .tpretile .nm{font-size:12px;line-height:1.25;max-width:94px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tpretile .ds{font-size:10px;color:var(--faint)}
+  .tpretile.add{justify-content:center;background:none;border-style:dashed;color:var(--dim);min-height:110px}
+  .tpretile.add .pl{font-size:22px;color:var(--gold2)}
+  /* -- rounds (chained timers) -- */
+  .trnds{display:flex;flex-direction:column;gap:7px}
+  .trnd{display:flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+  .trnd.cur{border-color:var(--gold);background:rgba(201,163,94,.10)}
+  .trnd .n{width:22px;height:22px;border-radius:50%;background:#2a2d38;color:var(--dim);font:700 11px/22px ui-monospace,monospace;text-align:center;flex:none}
+  .trnd.cur .n{background:var(--gold);color:#1a1407}
+  .trnd .lb{flex:1;min-width:0;text-align:left;font-size:13px;padding:7px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+  /* -- chess clock -- */
+  .tchset{border-bottom:1px solid var(--line);padding:9px 0}
+  .tchset .nm{font-size:13.5px;margin-bottom:7px}
+  .tchgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .tchcard{border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:18px 10px;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;transition:all .18s var(--ease)}
+  .tchcard .nm{font-size:13px;color:var(--dim)}
+  .tchcard .ms{font:700 38px/1 ui-monospace,monospace;letter-spacing:1px}
+  .tchcard .cap{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);min-height:12px}
+  .tchcard.act{border-color:var(--gold);background:rgba(201,163,94,.12);box-shadow:0 0 0 1px var(--gold),0 8px 24px rgba(201,163,94,.14)}
+  .tchcard.act .nm,.tchcard.act .cap{color:var(--gold2)}
+  .tchcard.flag{border-color:var(--red);background:rgba(224,101,95,.14);box-shadow:0 0 0 1px var(--red)}
+  .tchcard.flag .ms,.tchcard.flag .nm,.tchcard.flag .cap{color:#f0a09a}
+  /* -- sound picker rows -- */
+  .tsndrow{display:flex;align-items:center;gap:10px;padding:11px 12px;min-height:46px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin-bottom:7px;cursor:pointer}
+  .tsndrow:hover{border-color:var(--gold2)}
+  .tsndrow.on{border-color:var(--gold);background:rgba(201,163,94,.12)}
+  .tsndrow .nm{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* -- the zero podium moment (tablet only) -- */
+  #tpodium{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;
+    background:radial-gradient(700px 520px at 50% 42%,rgba(20,22,30,.86),rgba(6,7,10,.96));backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);animation:tpin .28s var(--ease)}
+  @keyframes tpin{from{opacity:0}to{opacity:1}}
+  #tpodium .tppanel{position:relative;text-align:center;padding:34px 46px;border-radius:22px;border:1px solid var(--tpa);background:rgba(18,20,26,.92);
+    box-shadow:0 0 0 1px rgba(255,255,255,.04),0 30px 90px rgba(0,0,0,.65),0 0 70px -10px var(--tpa);animation:tppop .5s var(--ease)}
+  @keyframes tppop{0%{transform:scale(.82);opacity:0}60%{transform:scale(1.04)}100%{transform:scale(1);opacity:1}}
+  #tpodium .tpbig{font:800 clamp(44px,11vw,112px)/1 -apple-system,BlinkMacSystemFont,Segoe UI,system-ui,sans-serif;letter-spacing:.06em;color:var(--tpa);text-shadow:0 0 34px var(--tpa)}
+  #tpodium .tpsub{margin-top:14px;font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint)}
+  #tpodium .tpbursts{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  #tpodium .tpbursts i{position:absolute;top:-8%;width:9px;height:15px;border-radius:2px;opacity:0;animation:tpfall 2.6s ease-in 1 forwards}
+  @keyframes tpfall{0%{opacity:0;transform:translateY(-12vh) rotate(0)}10%{opacity:1}100%{opacity:0;transform:translateY(112vh) rotate(720deg)}}
+  @media(pointer:coarse){
+    .tsw{width:44px;height:44px}
+    .ttl{height:54px}.ttlm{width:46px;height:54px}.ttlbar{top:24px}.ttl::after{height:34px;top:10px}
+    .tsndrow{min-height:52px}
+  }
+  @media(prefers-reduced-motion:reduce){
+    #tpodium,#tpodium .tppanel{animation:none}
+    #tpodium .tpbursts{display:none}
+    .tsw:hover{transform:none}
+    .tsw,.ttlm,.tpretile,.tchcard{transition:none}
+  }
+</style>
+</head>
+<body>
+<div id="hdr">
+  <div class="mark"></div>
+  <div><h1>RoomScape</h1><div class="sub">Six frames · one room</div></div>
+  <div class="sp"></div>
+  <div id="spaces">
+    <button data-space="play">▶ Play</button>
+    <button data-space="design">✎ Design</button>
+  </div>
+  <div class="sp"></div>
+  <span id="hdot" title="Conductor"></span>
+  <button id="calbtn" title="Calendar — the room's year, days and sky">📅</button>
+  <button id="gear" title="Settings">⚙</button>
+</div>
+
+<div id="now">
+  <div class="thumb" id="nowthumb"></div>
+  <div><div class="nm" id="nowname">—</div><div class="ph" id="nowphase">connecting…</div></div>
+  <div class="stat" id="tvstat">TVs <span class="tvdots" id="tvdots"></span></div>
+  <span id="phaserail"></span>
+  <button id="autochip" title="Autopilot — what the room is doing and why" style="display:none"></button>
+  <div class="stat">🔊 <input type="range" id="vol" min="0" max="100" value="70"></div>
+  <button class="tgl" id="kidtgl" title="Softens scares &amp; flashes while on"><span>👶</span> Kid-safe</button>
+  <div class="sp"></div>
+  <button id="panic">■ RESTORE ROOM</button>
+</div>
+
+<div id="views">
+  <!-- ============ PLAY ============ -->
+  <div class="view" id="vplay">
+    <div id="playtabs">
+      <button data-pt="modes" class="on">🎲 Modes</button>
+      <button data-pt="music">♪ Music</button>
+      <button data-pt="lights">💡 Lights</button>
+      <button data-pt="timer">⏱ Timer</button>
+      <button data-pt="scores">🏆 Scores</button>
+      <button data-pt="moments">🎭 Moments</button>
+      <button data-pt="games">🎉 Games</button>
+    </div>
+    <div class="ptab on" id="ptModes">
+    <div class="zt" style="max-width:1750px;margin:0 auto 12px">Tap a mode for its controls · ▶ plays it instantly</div>
+    <div id="pcats"></div>
+    <div id="pcards"></div>
+    <div id="roomrow">
+      <button class="rbig" id="rlights"><span class="ic">💡</span>Lights</button>
+      <button class="rbig" id="rtvon"><span class="ic">🖼</span>Wake TVs</button>
+      <button class="rbig" id="rtvart"><span class="ic">🌙</span>Art / sleep</button>
+      <button class="rbig" id="rscreens"><span class="ic">🖵</span>Screens</button>
+      <button class="rbig" id="rphotos"><span class="ic">❏</span>Photo wall</button>
+      <button class="rbig" id="rsurprise" title="A random reveal on a random frame — see what the room does"><span class="ic">✨</span>Surprise me</button><!-- v2.54 delight 9a -->
+    </div>
+    <div id="revealwrap" style="display:none;max-width:1750px;margin:14px auto 0">
+      <div class="zt" style="margin:0 0 6px">Reveal — bring a frame to life</div>
+      <div id="revealbar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></div>
+    </div>
+    <div id="cuewrap" style="display:none;max-width:1750px;margin:14px auto 0"></div>
+    </div>
+    <div class="ptab" id="ptMusic"></div>
+    <div class="ptab" id="ptLights"></div>
+    <div class="ptab" id="ptTimer"></div>
+    <div class="ptab" id="ptScores"></div>
+    <div class="ptab" id="ptMoments"><!-- v3.30 -->
+      <div style="max-width:1750px;margin:0 auto">
+        <div class="card" style="margin-bottom:16px">
+          <div class="zt">🗣 Announce — say anything in the room</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input type="text" id="momsaytext" maxlength="400" placeholder="Dinner is served…" style="flex:1;min-width:240px">
+            <select id="momsayvoice" style="max-width:280px"><option value="">— voice —</option></select>
+            <button class="btn p" id="momsaygo">🔊 Announce</button>
+            <button class="btn danger" id="momstopall" style="background:linear-gradient(180deg,#e0655f,#b64840);color:#fff;border:none;font-weight:700">⏹ Stop all sounds</button><!-- v3.41 -->
+          </div>
+          <div class="hint" style="margin-top:6px">Spoken on the TVs by the room voice (Home Assistant → Piper). Repeated lines are cached and play instantly. Enter announces too.</div>
+        </div>
+        <div id="socialwrap" style="display:none">
+          <div class="zt" style="margin:0 0 6px">🎭 Moments — on demand</div>
+          <div id="socialbar" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"></div>
+        </div>
+      </div>
+    </div>
+    <div class="ptab" id="ptGames"><!-- v3.40 rendered by renderGames() --></div>
+    <div id="lightsPop"><div class="zt" style="margin:0 0 4px">Light scenes</div><div class="chips" id="lightchips"></div></div>
+    <div id="screensPop"><div class="zt" style="margin:0 0 4px">Each screen — wake / sleep</div><div id="screenrows"></div></div>
+  </div>
+
+  <!-- ============ DESIGN ============ -->
+  <div class="view" id="vdesign">
+    <div id="strip"></div>
+    <div id="mhdr"></div>
+    <div id="lensbar">
+      <button data-lens="wall" class="on">🖼 Wall</button>
+      <button data-lens="sound">🔊 Sound</button>
+      <button data-lens="lighting">💡 Lighting</button>
+      <button data-lens="intro">🎬 Intro</button>
+      <button data-lens="motion">✨ Motion &amp; FX</button>
+      <button data-lens="behaviour">☑ Behaviour</button>
+    </div>
+    <div id="dmain">
+      <div id="canvaswrap">
+        <div id="walls">
+          <div><div class="wlab">Left wall</div><div class="wrow" id="wallL"></div></div>
+          <div><div class="wlab">Right wall</div><div class="wrow" id="wallR"></div></div>
+        </div>
+      </div>
+      <div id="insp"></div>
+    </div>
+    <div id="tray">
+      <div id="trayhdr">
+        <div id="trayseg">
+          <button data-tray="scenes" class="on">Scenes</button>
+          <button data-tray="effects">≋ Effects</button>
+          <button data-tray="overlays">Overlays</button>
+          <button data-tray="albums">Albums</button>
+        </div>
+        <div id="traykind" style="display:flex;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px">
+          <button data-kind="all" class="on">All</button>
+          <button data-kind="img">🖼 Images</button>
+          <button data-kind="vid">▶ Videos</button>
+        </div>
+        <input id="traysearch" type="text" placeholder="Search…">
+        <span id="trayhint">Click applies to the selected frame(s) · drag onto any frame</span>
+        <button id="traytgl">▾ Hide</button>
+      </div>
+      <div id="traycats" style="display:none;gap:6px;flex-wrap:wrap;margin:2px 0 8px"></div>
+      <div id="trayitems"></div>
+    </div>
+    <div id="savebar">
+      <button id="pvw"><span class="dot"></span> Preview on TVs</button>
+      <span class="dirtynote" id="dirtynote"></span>
+      <div class="sp"></div>
+      <button class="btn gh" id="revert">↩ Revert</button>
+      <button class="btn" id="saveas">Save as new mode…</button>
+      <button class="btn p" id="save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="ctxmenu"></div>
+<div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="toast"></div>
+
+<script src="engine.js"></script>
+<script src="fx.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

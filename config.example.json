@@ -1,0 +1,38 @@
+{
+  "_comment": "Target config schema (Phase 1 — see ROADMAP.md). In v0.10 settings still live in profiles.json's settings block; this file documents where they are moving. Copy to config.json when the loader lands. NO SECRETS HERE — tokens go in .env.",
+
+  "atRestMode": "atrest",
+
+  "layout": {
+    "orientation": "portrait",
+    "walls": {
+      "L": ["L1", "L2", "L3"],
+      "R": ["R1", "R2", "R3"]
+    },
+    "roles": {
+      "primary": "R2",
+      "centers": ["L2", "R2"],
+      "corners": ["L1", "L3", "R1", "R3"],
+      "sweepOrder": ["L1", "L2", "L3", "R1", "R2", "R3"]
+    }
+  },
+
+  "ha": {
+    "tvs": { "L1": "", "L2": "", "L3": "", "R1": "", "R2": "", "R3": "" },
+    "tvQuirks": { "": "samsung-frame" },
+    "lightZones": {
+      "main": ["light.example_ceiling"],
+      "accent": ["light.example_lamp_1", "light.example_lamp_2"]
+    }
+  },
+
+  "music": {
+    "note": "URL/token come from .env (MA_URL / MA_TOKEN); player picked in the app"
+  },
+
+  "edges": [],
+
+  "rooms": [
+    { "id": "main", "name": "Main Room", "icon": "🛋" }
+  ]
+}

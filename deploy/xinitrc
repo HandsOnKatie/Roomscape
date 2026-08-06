@@ -1,0 +1,191 @@
+#!/bin/sh
+# Roomscape — kiosk X session   v1.0 (public; derived from reference build v1.91)
+#
+# One display PC drives up to three portrait TVs. Each connected TV gets its
+# own fullscreen browser kiosk showing one frame page.
+#
+# Install as:  ~/.xinitrc   (make executable: chmod +x ~/.xinitrc)
+# deploy/setup.sh installs this file and fills in SERVER/FRAMES for you.
+#
+# Field-tested behaviours carried over from the reference build:
+#  - GRACEFUL DEGRADATION: one kiosk per TV that is ACTUALLY CONNECTED
+#    (xrandr-detected). OUTPUTS is only a preferred left-to-right order; a
+#    connected output not listed is appended, a listed-but-unplugged one is
+#    turned off. Plug in 1, 2 or 3 TVs and it just works.
+#  - BROWSER FALLBACK: Google Chrome (deb) preferred — it reaches the host
+#    VA-API stack for HARDWARE video decode. Snap chromium works but decodes
+#    on the CPU (fine for bring-up, stutters on 3x4K). Snap confinement also
+#    rejects top-level dot-dir profiles, so profiles move under the snap's
+#    writable area when falling back.
+#  - PER-TV AUDIO: PipeWire runs as a lingering user service (install-audio.sh);
+#    each kiosk is launched with PULSE_SINK set to its TV's HDMI output,
+#    resolved by ~/immersion-edge/frame-sink.js from the app's HDMI port map.
+#  - PER-SCREEN rotation: ROTATE is the wall default; ROTATE_MAP holds
+#    per-output overrides ("HDMI-A-0=right") for TVs mounted the other way.
+
+# ========================= CONFIG (edit per PC) =========================
+SERVER="__SERVER__"                 # REQUIRED. Your Conductor (or local edge mirror):
+                                    #   http://<server-ip>:8090   — Conductor directly
+                                    #   http://localhost:8090     — local edge mirror (edge.js)
+                                    # deploy/setup.sh fills this in; or edit it here.
+BROWSER="google-chrome-stable"      # kiosk browser; falls back to snap "chromium" below
+FRAMES="L1 L2 L3"                   # frame ids this PC shows, left to right
+                                    # (left wall "L1 L2 L3", right wall "R1 R2 R3", …)
+OUTPUTS="HDMI-A-0 DisplayPort-0 DisplayPort-2"   # video outputs in left-to-right physical
+                                    # TV order. Find yours with:  xrandr | grep " connected"
+                                    # (configure-screens.sh sets this interactively.)
+ROTATE="left"                       # portrait rotation: "left" or "right"
+                                    # (depends on which way the TVs are mounted)
+ROTATE_MAP=""                       # per-screen overrides, e.g. "HDMI-A-0=right"
+                                    # (output=left|right|inverted|normal; wins over ROTATE)
+W=2160; H=3840                      # portrait 4K per TV
+# ========================================================================
+
+# refuse to start with the placeholder server — setup.sh should have set it
+case "$SERVER" in
+  __SERVER__|"")
+    echo "roomscape: SERVER is not set in ~/.xinitrc — edit the CONFIG block" >&2
+    exit 1 ;;
+esac
+
+# browser fallback — Chrome (deb) preferred for VA-API hardware decode
+PROFBASE="$HOME"
+if ! command -v "$BROWSER" >/dev/null 2>&1; then
+  BROWSER="chromium"
+  PROFBASE="$HOME/snap/chromium/common"     # snap can't write ~/.kiosk-* dot-dirs
+  mkdir -p "$PROFBASE" 2>/dev/null
+fi
+
+# never blank, never sleep
+xset s off
+xset s noblank
+xset -dpms
+
+# unmute the HDMI digital-audio outputs — IEC958 pins are muted by default on a
+# fresh install, which silences all TV speakers. (card 0 = the GPU HDMI audio.)
+for A in 0 1 2 3; do amixer -c0 sset "IEC958",$A unmute >/dev/null 2>&1; done
+
+# ---- per-TV audio plumbing ----
+# PipeWire runs as a lingering user service (deploy/install-audio.sh). Point this
+# session at its socket so each kiosk below can be pinned to its TV's HDMI output.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+NODE="$(command -v node 2>/dev/null || echo /snap/bin/node)"
+FRAMESINK="$HOME/immersion-edge/frame-sink.js"   # resolves a frame id -> its Pulse sink name
+
+# Expose EACH HDMI output as its own sink. The default 'hdmi-stereo' profile
+# activates only one HDMI, so all kiosks on a PC would share one TV's speaker.
+# The PipeWire 'pro-audio' profile exposes every output as its own sink, which
+# is what frame-sink.js matches on. Wait for PipeWire first.
+i=0; while [ "$i" -lt 12 ]; do pactl info >/dev/null 2>&1 && break; sleep 1; i=$((i + 1)); done
+# Pick the GPU's HDMI audio card (usually the PCI audio function ending ".1").
+# If autodetection misses on your hardware, set HDMICARD to the card name shown
+# by:  pactl list cards short
+HDMICARD=$(pactl list cards short 2>/dev/null | awk '{print $2}' | grep -m1 '\.1$')
+[ -n "$HDMICARD" ] && pactl set-card-profile "$HDMICARD" pro-audio 2>/dev/null
+sleep 1
+# even baseline: set every TV sink to 100% so the app's master volume is the only lever
+for S in $(pactl list sinks short 2>/dev/null | awk '/pro-output/{print $2}'); do
+  pactl set-sink-volume "$S" 100% 2>/dev/null
+done
+
+# ---- which outputs are physically connected right now? ----
+CONNECTED=$(xrandr | awk '/ connected/{print $1}')
+
+# Build ACTIVE = configured OUTPUTS that are connected (in configured order),
+# then append any other connected outputs not already listed (so a freshly
+# plugged-in TV still lights up even before you re-run the setup script).
+ACTIVE=""
+for O in $OUTPUTS; do
+  for C in $CONNECTED; do
+    [ "$O" = "$C" ] && ACTIVE="$ACTIVE $O"
+  done
+done
+for C in $CONNECTED; do
+  found=0
+  for O in $OUTPUTS; do [ "$O" = "$C" ] && found=1; done
+  [ "$found" -eq 0 ] && ACTIVE="$ACTIVE $C"
+done
+# de-dupe while preserving order, trim
+ACTIVE=$(printf '%s\n' $ACTIVE | awk '!seen[$0]++' | xargs)
+
+# Nothing detected (very rare — e.g. xrandr hiccup): fall back to the
+# configured list so we still try to bring something up.
+[ -z "$ACTIVE" ] && ACTIVE="$OUTPUTS"
+
+# Turn OFF any configured output that is NOT active, so an unplugged TV can't
+# leave a stale/black region in the virtual desktop.
+for O in $OUTPUTS; do
+  case " $ACTIVE " in
+    *" $O "*) ;;                       # in use — leave it
+    *) xrandr --output "$O" --off 2>/dev/null ;;
+  esac
+done
+
+# prefix for auto-generated frame ids (if there are more TVs than FRAMES words)
+PREFIX=$(printf '%s' "$FRAMES" | awk '{print $1}' | sed 's/[0-9].*//')
+[ -z "$PREFIX" ] && PREFIX=L
+
+# ---- arrange only the active outputs, side by side, left to right ----
+i=0
+for OUT in $ACTIVE; do
+  if [ "$i" -eq 0 ]; then PRIM="--primary"; else PRIM=""; fi
+  R="$ROTATE"                                        # per-screen override wins
+  for KV in $ROTATE_MAP; do
+    case "$KV" in "$OUT"=*) R="${KV#*=}" ;; esac
+  done
+  xrandr --output "$OUT" --mode 3840x2160 --rotate "$R" --pos $((i * W))x0 $PRIM 2>/dev/null \
+    || xrandr --output "$OUT" --auto        --rotate "$R" --pos $((i * W))x0 $PRIM 2>/dev/null
+  i=$((i + 1))
+done
+sleep 2
+
+# ---- wait for the server to be ready (best effort, up to 30s) ----
+# A local edge mirror serves /edge/health as soon as it's up; a direct
+# Conductor answers /api/health.
+i=0
+while [ "$i" -lt 30 ]; do
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf "$SERVER/edge/health" >/dev/null 2>&1 && break
+    curl -sf "$SERVER/api/health"  >/dev/null 2>&1 && break
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O /dev/null "$SERVER/edge/health" && break
+    wget -q -O /dev/null "$SERVER/api/health"  && break
+  else
+    sleep 3; break
+  fi
+  i=$((i + 1)); sleep 1
+done
+
+# ---- one browser kiosk per active output, paired with FRAMES in order ----
+# (separate profiles so they can't collide). If FRAMES runs out (more TVs than
+# ids listed), ids are generated as ${PREFIX}${n}.
+set -- $FRAMES
+i=0
+for OUT in $ACTIVE; do
+  if [ -n "$1" ]; then FRAME="$1"; shift; else FRAME="${PREFIX}$((i + 1))"; fi
+  # route THIS kiosk's audio to its own TV's HDMI output (empty SINK -> default sink)
+  SINK=""
+  [ -x "$NODE" ] && [ -f "$FRAMESINK" ] && SINK=$("$NODE" "$FRAMESINK" "$FRAME" "$SERVER" 2>/dev/null)
+  env ${SINK:+PULSE_SINK=$SINK} "$BROWSER" \
+    --kiosk "$SERVER/frame.html?frame=$FRAME&ws=auto&label=0" \
+    --user-data-dir="$PROFBASE/.kiosk-$FRAME" \
+    --window-position=$((i * W)),0 \
+    --window-size=$W,$H \
+    --no-first-run \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-session-crashed-bubble \
+    --disable-features=TranslateUI \
+    --autoplay-policy=no-user-gesture-required \
+    --enable-features=VaapiVideoDecodeLinuxGL,VaapiIgnoreDriverChecks,VaapiVideoDecoder \
+    --ignore-gpu-blocklist \
+    --enable-zero-copy \
+    --use-gl=angle \
+    --use-angle=gl \
+    --enable-gpu-rasterization \
+    --check-for-update-interval=31536000 &
+  i=$((i + 1))
+  sleep 3
+done
+
+wait

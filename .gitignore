@@ -1,0 +1,39 @@
+# --- secrets & local config (never commit) ---
+.env
+config.json
+
+# --- runtime data (machine-local) ---
+data/
+state.json
+modeposters.json
+_inventory.json
+_backups/
+.thumbs/
+
+# --- user media (yours, not the repo's) ---
+media/
+Photos/
+sounds/*
+!sounds/starter/
+overlays/*
+!overlays/.gitkeep
+
+# media file types anywhere outside themes/
+*.mp4
+*.mov
+*.webm
+*.mp3
+*.wav
+*.flac
+!themes/**/*.mp4
+!themes/**/*.mp3
+!themes/**/*.wav
+!sounds/starter/**
+
+# --- node ---
+node_modules/
+npm-debug.log
+
+# --- OS noise ---
+Thumbs.db
+.DS_Store

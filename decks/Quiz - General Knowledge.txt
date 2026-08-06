@@ -1,0 +1,15 @@
+What is the capital of Australia?|Canberra|Sydney|Canberra|Melbourne|Perth
+How many hearts does an octopus have?|Three|One|Two|Three|Eight
+Which planet is closest to the sun?|Mercury|Venus|Mercury|Mars|Earth
+What year did the Titanic sink?|1912|1905|1912|1921|1898
+Which country invented pizza?|Italy|Greece|Spain|Italy|France
+What is the longest river in the world?|The Nile|The Amazon|The Nile|The Yangtze|The Mississippi
+How many bones are in the adult human body?|206|186|206|226|246
+Which artist painted the Mona Lisa?|Leonardo da Vinci|Michelangelo|Raphael|Leonardo da Vinci|Donatello
+What is the smallest country in the world?|Vatican City|Monaco|Malta|Vatican City|San Marino
+Which gas do plants absorb from the air?|Carbon dioxide|Oxygen|Nitrogen|Carbon dioxide|Hydrogen
+What is the tallest mountain in Wales?|Snowdon|Ben Nevis|Snowdon|Scafell Pike|Cadair Idris
+How many players are on a cricket team?|Eleven|Nine|Ten|Eleven|Twelve
+Which ocean is the largest?|The Pacific|The Atlantic|The Indian|The Pacific|The Arctic
+What does WWW stand for?|World Wide Web|World Web Window|World Wide Web|Wide World Web|Web World Wide
+Which board game features Old Kent Road?|Monopoly|Cluedo|Monopoly|Risk|Scrabble

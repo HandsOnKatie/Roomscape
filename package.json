@@ -1,0 +1,17 @@
+{
+  "name": "immersion-engine-conductor",
+  "version": "0.3.0",
+  "description": "The Immersion Engine — Conductor backend (state authority + WebSocket sync + REST + optional MQTT) and the frame/control web app.",
+  "main": "conductor.js",
+  "scripts": {
+    "start": "node conductor.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "mqtt": "^5.0.0",
+    "sharp": "^0.33.5"
+  },
+  "private": true
+}

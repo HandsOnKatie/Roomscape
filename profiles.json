@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "dining": { "name": "At rest", "accent": "#8a8f98", "ambience": "Quiet", "kidSafe": true, "scene": "atrest_default", "isOff": true }
+  },
+  "tagmap": {},
+  "settings": {}
+}

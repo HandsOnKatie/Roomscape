@@ -1,0 +1,23 @@
+[Unit]
+Description=Roomscape edge media mirror
+# Docs: docs/INSTALL.md in the Roomscape repo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+# local port the kiosks connect to (must match SERVER in ~/.xinitrc)
+Environment=PORT=8090
+# the upstream Conductor this PC mirrors from (filled in by install-edge.sh)
+Environment=UPSTREAM=__UPSTREAM__
+# where cached 4K media lives on local disk
+Environment=CACHE_DIR=__HOME__/framecache
+# 1 = pre-download the whole library on boot + hourly; 0 = cache on first use only
+Environment=PREWARM=1
+ExecStart=__NODE__ __HOME__/immersion-edge/edge.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

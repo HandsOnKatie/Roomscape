@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>RoomScape Frame</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  /* a Frame TV is portrait; this fills whatever portrait viewport it is given */
+  #frame{position:fixed;inset:0}
+  /* v1.1 now-playing toast (state.musicNow) — subtle bottom pill, ~10s per track */
+  #mustoast{position:fixed;left:50%;bottom:3.5%;transform:translateX(-50%) translateY(150%);z-index:60;
+    display:flex;align-items:center;gap:1.2vw;max-width:86%;padding:1.1vw 1.7vw;border-radius:1.5vw;
+    background:rgba(12,13,18,.84);border:1px solid rgba(201,163,94,.35);box-shadow:0 1vw 3vw rgba(0,0,0,.55);
+    backdrop-filter:blur(6px);opacity:0;transition:opacity .9s ease,transform .9s cubic-bezier(.2,.8,.2,1);pointer-events:none}
+  #mustoast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  #mustoast img{width:5.6vw;height:5.6vw;border-radius:.9vw;object-fit:cover;flex:none}
+  #mustoast .note{font-size:3vw;color:#c9a35e;flex:none;line-height:1}
+  #mustoast .tt{font:600 1.9vw/1.3 system-ui,sans-serif;color:#f2ead9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #mustoast .ar{font:400 1.5vw/1.35 system-ui,sans-serif;color:#b9ac8f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* ambient motion (Ken Burns, weather, etc.) is managed by fx.js per game */
+</style>
+</head>
+<body>
+<div id="frame" class="ie-frame"></div>
+<script src="engine.js"></script>
+<script src="fx.js"></script>
+<script src="fx-audio.js"></script>
+<script>
+  (function () {
+    // ---- which frame am I? ----  ?frame=L1 .. R3   (also accepts ?id=)
+    var qs = new URLSearchParams(location.search);
+    var frameId = (qs.get('frame') || qs.get('id') || 'L1').toUpperCase();
+    if (IE.FRAME_IDS.indexOf(frameId) < 0) frameId = 'L1';
+    var wsParam = qs.get('ws');                       // optional real Conductor
+    var wsUrl = wsParam === 'auto'
+      ? ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host)
+      : (wsParam || null);
+    var showLabel = qs.get('label') !== '0';          // ?label=0 hides the corner id
+    var el = document.getElementById('frame');
+    if (IE.audio) IE.audio.init(frameId);             // per-frame Web Audio engine (fx-audio.js)
+
+    // ---- first paint with default state so the TV is never blank ----
+    var state = IE.defaultState();
+    paint(state);
+
+    // ---- connect to the control bus ----
+    var bus = IE.createBus('frame', { ws: wsUrl });
+    bus.onState(function (s) { state = s; paint(state); });
+
+    // ask the controller for the current room state, retry a few times
+    var tries = 0;
+    (function ask() { bus.requestState(); if (++tries < 6) setTimeout(ask, 400); })();
+
+    function paint(s) {
+      IE.renderFrame(el, frameId, s);
+      if (IE.audio) IE.audio.apply(s);                // ambient bed follows the current mode
+      musicToast(s);                                  // v1.1: 10s song toast when the MA track changes
+      var idEl = el.querySelector('[data-ieid]');
+      if (idEl && showLabel) { setTimeout(function () { idEl.style.opacity = '0'; }, 4000); }
+      else if (idEl) idEl.style.display = 'none';
+    }
+
+    // ---- v1.1 now-playing toast: appears for 10s when Music Assistant starts a new song ----
+    var musKey = '', musTimer = null;
+    function musicToast(s) {
+      var n = s && s.musicNow;
+      var t = document.getElementById('mustoast');
+      if (!n || !n.title) { musKey = ''; if (t) t.classList.remove('on'); return; }
+      var key = n.title + '|' + (n.artist || '') + '|' + (n.ts || 0);
+      if (key === musKey) return;                       // same song — leave the toast alone
+      musKey = key;
+      if (n.ts && (Date.now() - n.ts) > 25000) return;  // old news (page just reconnected) — stay quiet
+      if (!t) { t = document.createElement('div'); t.id = 'mustoast'; document.body.appendChild(t); }
+      function esc(x) { return String(x || '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+      t.innerHTML = (n.img ? '<img src="' + esc(n.img).replace(/"/g, '&quot;') + '" alt="">' : '<span class="note">\u266a</span>')
+        + '<div style="min-width:0"><div class="tt">' + esc(n.title) + '</div>'
+        + (n.artist ? '<div class="ar">' + esc(n.artist) + (n.album ? ' \u00b7 ' + esc(n.album) : '') + '</div>' : '') + '</div>';
+      t.classList.remove('on');
+      requestAnimationFrame(function () { requestAnimationFrame(function () { t.classList.add('on'); }); });
+      clearTimeout(musTimer); musTimer = setTimeout(function () { t.classList.remove('on'); }, 10000);
+    }
+
+    // tap anywhere to re-show the frame id briefly (handy while arranging TVs)
+    el.addEventListener('click', function () {
+      var idEl = el.querySelector('[data-ieid]');
+      if (idEl) { idEl.style.display = 'block'; idEl.style.opacity = '1'; setTimeout(function(){ idEl.style.opacity='0'; }, 2500); }
+    });
+  })();
+</script>
+
+<script>
+/* ==== RULES WALL OVERLAY v2 (2026-07-18) — per-TV roles + sound + speed ====
+   Polls /api/rules/state: { show, game, videoId, name, sections, ts,
+     sound:{on,frame}, layout:{L1..R3: video|setup|turn|win|tips|none}, speed }
+   Default layout = the classic wall (L1 setup, L3 your-turn, R1 winning,
+   R3 tips, L2+R2 video). speed drives the YouTube iframe API (rambly
+   tutorials at 1.5x); sound unmutes the chosen TV. ==== */
+(function () {
+  var qs2 = new URLSearchParams(location.search);
+  var fid = (qs2.get('frame') || qs2.get('id') || 'L1').toUpperCase();
+  var TITLES = { setup: 'SETUP', turn: 'YOUR TURN', win: 'WINNING', tips: 'TABLE TIPS' };
+  var DEFROLE = { L1: 'setup', L2: 'video', L3: 'turn', R1: 'win', R2: 'video', R3: 'tips' };
+  var cur = null, box = null, spdTimers = [];
+  function esc2(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  function clearT() { spdTimers.forEach(function (t) { clearTimeout(t); }); spdTimers = []; }
+  function clear() { clearT(); if (box) { box.remove(); box = null; } cur = null; }
+  function show(st) {
+    clear();
+    cur = st.game + '|' + st.ts;
+    var role = (st.layout && st.layout[fid]) || DEFROLE[fid] || 'none';
+    if (role !== 'video' && role !== 'none' && st.sections && st.sections[role] === false) role = 'none';
+    if (role === 'video' && !st.videoId) role = 'none';
+    if (role === 'none') return;   /* this TV keeps showing the scene */
+    box = document.createElement('div');
+    box.style.cssText = 'position:fixed;inset:0;z-index:9000;background:#0b0c10;color:#e8e6df;font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:6vw 5vw;overflow:hidden';
+    if (role !== 'video') {
+      fetch('/api/rules?game=' + encodeURIComponent(st.game)).then(function (r) { return r.json(); }).then(function (j) {
+        if (!box || !j.rules) return;
+        var g = j.rules;
+        box.innerHTML = '<img src="/media/covers/cover_' + st.game + '.jpg" onerror="this.remove()" style="width:22vw;border-radius:1.2vw;box-shadow:0 1vw 4vw rgba(0,0,0,.6)">' +
+          '<div style="font:700 3.4vw serif;color:#e3c489;margin:2.5vw 0 .8vw">' + esc2(g.name) + '</div>' +
+          '<div style="font:600 2.4vw sans-serif;letter-spacing:.12em;color:#c9a35e;margin-bottom:1.6vw">' + (TITLES[role] || role) + '</div>' +
+          '<div style="font-size:2.55vw;line-height:1.55;white-space:pre-line">' + esc2(g[role]) + '</div>' +
+          '<div style="position:absolute;bottom:3vw;left:5vw;color:#6a6d79;font-size:1.7vw">' + esc2(g.players || '') + '  ·  ' + esc2(g.time || '') + '</div>';
+      }).catch(function () {});
+    } else {
+      var unmuted = !!(st.sound && st.sound.on && (st.sound.frame === fid || st.sound.frame === 'both'));
+      var inner = '<div style="font:700 3.2vw serif;color:#e3c489;text-align:center;margin-bottom:2vw">How to play</div>';
+      inner += '<iframe id="rsx-yt" src="https://www.youtube-nocookie.com/embed/' + st.videoId +
+        '?autoplay=1&mute=' + (unmuted ? 0 : 1) + '&loop=1&playlist=' + st.videoId +
+        '&controls=0&rel=0&iv_load_policy=3&enablejsapi=1" style="width:90vw;height:50.6vw;border:0;border-radius:1.2vw;background:#000" allow="autoplay; fullscreen" allowfullscreen></iframe>';
+      box.innerHTML = '<div style="display:flex;flex-direction:column;justify-content:center;height:100%">' + inner + '</div>';
+      var spd = parseFloat(st.speed) || 1;
+      [1500, 3000, 5000, 8000, 12000, 20000].forEach(function (ms) {   /* retry while the player boots */
+        spdTimers.push(setTimeout(function () {
+          try {
+            var f = document.getElementById('rsx-yt');
+            if (!f || !f.contentWindow) return;
+            if (spd !== 1) f.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [spd] }), '*');
+            if (unmuted) {
+              f.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*');
+              f.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*');
+            }
+          } catch (e) {}
+        }, ms));
+      });
+    }
+    document.body.appendChild(box);
+  }
+  var rsxFails = 0;   // v1.2: consecutive poll failures
+  setInterval(function () {
+    fetch('/api/rules/state').then(function (r) { return r.json(); }).then(function (st) {
+      rsxFails = 0;
+      if (!st.show) { if (box || cur) clear(); return; }
+      if (cur !== st.game + '|' + st.ts) show(st);
+    }).catch(function () {
+      // v1.2: the overlay must not outlive a dead conductor. Previously it only
+      // cleared on a SUCCESSFUL fetch returning show:false, so a persistent
+      // fetch failure left the z-9000 box up forever — indistinguishable from a
+      // frozen frame on the video-role TVs (L2/R2). Clear after ~15s of failures;
+      // if rules are still meant to show, the next successful poll re-shows them.
+      if (++rsxFails >= 5 && (box || cur)) clear();
+    });
+  }, 3000);
+})();
+</script>
+</body>
+</html>

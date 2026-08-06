@@ -1,0 +1,36 @@
+# Roomscape Conductor — docker compose (public v1.0)
+#
+# Run from this folder:
+#   cp ../.env.example ../.env    # then fill in HA_URL / HA_TOKEN (and MA_* if used)
+#   docker compose up -d
+#   open http://<server>:8090
+#
+# The repo root is mounted read-only as the served app; only the folders the
+# Conductor actually writes to are mounted writable on top of it.
+services:
+  roomscape:
+    build: .
+    image: roomscape:latest
+    container_name: roomscape
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    # Secrets & endpoints live in ../.env (never in this file):
+    # HA_URL, HA_TOKEN, optional MA_URL/MA_TOKEN, optional MQTT_URL/MQTT_PREFIX.
+    env_file:
+      - ../.env
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      # App/engine files (conductor.js, conductor-lib/, app/, frame pages) —
+      # read-only: editing them on the host is the deploy; content/web files
+      # are picked up instantly, conductor.js after `docker restart roomscape`.
+      - ..:/app/web:ro
+      # Runtime state — WRITABLE: state.json, profiles.json + backups live here.
+      - ../data:/app/web/data
+      # Media library — writable so the thumbnail cache (.thumbs/) can build.
+      - ../media:/app/web/media
+      # Theme packs — read-only (drop a pack folder in, then rescan in the app).
+      - ../themes:/app/web/themes:ro
+      # Sound library (intro cues, sfx) — read-only.
+      - ../sounds:/app/web/sounds:ro

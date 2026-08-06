@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "name": "Ocean Depths",
+  "author": "Hands On Katie",
+  "version": "0.10",
+  "license": "media: see LICENSES.md",
+  "kidSafe": true,
+  "requires": { "framesMin": 1, "orientation": "portrait" },
+
+  "section": { "id": "moods", "name": "Moods", "icon": "🌊" },
+
+  "modes": {
+    "main": {
+      "name": "Ocean Depths",
+      "accent": "#1b6ca8",
+      "ambience": "Deep water calm",
+      "wall": { "kind": "pano", "scene": "scenes/depths_pano.mp4" },
+      "effect": "effects/bubbles.mp4",
+      "transition": { "style": "fade", "durationMs": 1600 },
+      "light": {
+        "scene": { "brightness_pct": 22, "rgb_color": [40, 90, 140], "transition": 4 },
+        "zones": { "main": { "brightness_pct": 22 } }
+      },
+      "music": { "query": "deep ocean ambient" },
+      "audio": { "loop": "sounds/underwater_loop.mp3", "gain": 0.35 }
+    }
+  }
+}

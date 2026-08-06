@@ -1,0 +1,18 @@
+[Unit]
+Description=Roomscape music player (squeezelite pinned to one TV sink)
+# Docs: docs/INSTALL.md in the Roomscape repo
+After=network-online.target immersion-edge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+EnvironmentFile=/etc/default/immersion-music
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=__HOME__
+ExecStart=/bin/sh __HOME__/immersion-edge/music-player.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

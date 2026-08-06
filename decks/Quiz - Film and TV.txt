@@ -1,0 +1,10 @@
+Which film won the first ever Best Picture Oscar?|Wings|Wings|Sunrise|Metropolis|The Kid
+Who directed Jurassic Park?|Steven Spielberg|James Cameron|Steven Spielberg|George Lucas|Ridley Scott
+What is the name of the coffee shop in Friends?|Central Perk|Central Perk|The Grind|Cafe Nervosa|Monk's
+Which actor played Gandalf?|Ian McKellen|Patrick Stewart|Ian McKellen|Michael Gambon|Christopher Lee
+What colour pill does Neo take in The Matrix?|Red|Blue|Red|Green|White
+In which city is Coronation Street set?|Manchester|Liverpool|Leeds|Manchester|Birmingham
+Who voices Woody in Toy Story?|Tom Hanks|Tim Allen|Tom Hanks|Billy Crystal|Robin Williams
+What is the highest-grossing film of all time?|Avatar|Titanic|Avatar|Avengers Endgame|Star Wars
+Which house is Harry Potter in?|Gryffindor|Slytherin|Hufflepuff|Gryffindor|Ravenclaw
+What is Doctor Who's time machine called?|The TARDIS|The DeLorean|The TARDIS|The Falcon|The Enterprise
