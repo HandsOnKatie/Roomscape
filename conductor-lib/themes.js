@@ -1,5 +1,9 @@
 /* ===================================================================
-   conductor-lib/themes.js  v1.0  (RS-THEMES v1, community v0.31)
+   conductor-lib/themes.js  v1.1  (RS-THEMES v1, community v0.32)
+   v1.1 (Phase 3b, RS-THEME-ZIP): manifest validation extracted into
+   validateManifest(j) (pure, no fs) so the zip-import endpoint can vet a
+   theme.json BEFORE writing anything; packIdOk(id) exposes the pack-id
+   charset rule. scanThemes behaviour unchanged (it now calls both).
    Theme-pack loader: pure scan/validate/expand logic for docs/THEMES.md
    format 1 packs. One folder under THEMES_DIR = one pack; a pack's modes
    are registered in-memory under the namespaced id "<pack>.<modeId>"
@@ -40,6 +44,39 @@ module.exports = function (ctx) {
     return true;
   }
 
+  function packIdOk(id) { return typeof id === 'string' && !!id && PACK_ID_RE.test(id); }
+
+  /* ---------- manifest validation: PURE (no fs) — shared by scanThemes and the
+     RS-THEME-ZIP import endpoint. Takes the PARSED theme.json; returns
+     { errors:[], name, author, version, kidSafe, section, requires, modes:{id:def} }.
+     Fatal problems (not an object / wrong format / no modes) leave modes empty. ---------- */
+  function validateManifest(j) {
+    const v = { errors: [], name: '', author: '', version: '', kidSafe: false, section: null, requires: null, modes: {} };
+    if (!j || typeof j !== 'object' || Array.isArray(j)) { v.errors.push('theme.json: not an object'); return v; }
+    if (j.format !== 1) { v.errors.push('unsupported format ' + JSON.stringify(j.format) + ' (this loader speaks format 1)'); return v; }
+    if (typeof j.name === 'string') v.name = j.name;
+    if (typeof j.author === 'string') v.author = j.author;
+    if (typeof j.version === 'string') v.version = j.version;
+    v.kidSafe = j.kidSafe === true;
+    v.requires = (j.requires && typeof j.requires === 'object') ? j.requires : null;
+    if (j.section && typeof j.section === 'object' && typeof j.section.id === 'string' && j.section.id) {
+      v.section = { id: String(j.section.id).slice(0, 40),
+                    name: String(j.section.name || j.section.id).slice(0, 60),
+                    icon: String(j.section.icon || '').slice(0, 8) };
+    }
+    const modes = (j.modes && typeof j.modes === 'object' && !Array.isArray(j.modes)) ? j.modes : null;
+    if (!modes || !Object.keys(modes).length) { v.errors.push('theme.json has no modes'); return v; }
+    Object.keys(modes).forEach(function (mid) {
+      const m = modes[mid];
+      if (!MODE_ID_RE.test(mid)) { v.errors.push('mode "' + mid + '": illegal id (allowed: A-Z a-z 0-9 _ -; no dots)'); return; }
+      if (!m || typeof m !== 'object' || Array.isArray(m)) { v.errors.push('mode "' + mid + '": not an object'); return; }
+      if (!m.wall || typeof m.wall !== 'object') { v.errors.push('mode "' + mid + '": missing "wall" (required by format 1)'); return; }
+      v.modes[mid] = m;
+    });
+    if (!Object.keys(v.modes).length && !v.errors.length) v.errors.push('no valid modes');
+    return v;
+  }
+
   /* ---------- scan: one level of THEMES_DIR; every folder becomes a report entry ---------- */
   function scanThemes(dir) {
     const packs = [];
@@ -59,31 +96,15 @@ module.exports = function (ctx) {
       let j;
       try { j = JSON.parse(raw.replace(/^\uFEFF/, '')); }
       catch (e) { pack.errors.push('theme.json: ' + (e && e.message)); continue; }
-      if (!j || typeof j !== 'object' || Array.isArray(j)) { pack.errors.push('theme.json: not an object'); continue; }
-      if (j.format !== 1) { pack.errors.push('unsupported format ' + JSON.stringify(j.format) + ' (this loader speaks format 1)'); continue; }
-      pack.name = (typeof j.name === 'string' && j.name) ? j.name : id;
-      pack.author = (typeof j.author === 'string') ? j.author : '';
-      pack.version = (typeof j.version === 'string') ? j.version : '';
-      pack.kidSafe = j.kidSafe === true;
-      pack.requires = (j.requires && typeof j.requires === 'object') ? j.requires : null;
-      if (j.section && typeof j.section === 'object' && typeof j.section.id === 'string' && j.section.id) {
-        pack.section = { id: String(j.section.id).slice(0, 40),
-                         name: String(j.section.name || j.section.id).slice(0, 60),
-                         icon: String(j.section.icon || '').slice(0, 8) };
-      }
+      const v = validateManifest(j);                 // v1.1: shared with the RS-THEME-ZIP import
+      v.errors.forEach(function (e2) { pack.errors.push(e2); });
+      pack.name = v.name || id;
+      pack.author = v.author; pack.version = v.version; pack.kidSafe = v.kidSafe;
+      pack.requires = v.requires; pack.section = v.section;
+      pack.modes = v.modes;
       // conventional pack poster (cover.jpg per THEMES.md; .png accepted) — pack-level, not a mode ref
       if (fs.existsSync(path.join(pdir, 'cover.jpg'))) pack.cover = '__theme__/' + id + '/cover.jpg';
       else if (fs.existsSync(path.join(pdir, 'cover.png'))) pack.cover = '__theme__/' + id + '/cover.png';
-      const modes = (j.modes && typeof j.modes === 'object' && !Array.isArray(j.modes)) ? j.modes : null;
-      if (!modes || !Object.keys(modes).length) { pack.errors.push('theme.json has no modes'); continue; }
-      Object.keys(modes).forEach(function (mid) {
-        const m = modes[mid];
-        if (!MODE_ID_RE.test(mid)) { pack.errors.push('mode "' + mid + '": illegal id (allowed: A-Z a-z 0-9 _ -; no dots)'); return; }
-        if (!m || typeof m !== 'object' || Array.isArray(m)) { pack.errors.push('mode "' + mid + '": not an object'); return; }
-        if (!m.wall || typeof m.wall !== 'object') { pack.errors.push('mode "' + mid + '": missing "wall" (required by format 1)'); return; }
-        pack.modes[mid] = m;
-      });
-      if (!Object.keys(pack.modes).length && !pack.errors.length) pack.errors.push('no valid modes');
     }
     return { dir: dir, packs: packs };
   }
@@ -188,5 +209,5 @@ module.exports = function (ctx) {
     return { profile: prof, lightScenePayload: lightScenePayload, missing: missing, warnings: warnings };
   }
 
-  return { scanThemes, expandMode, relOk };
+  return { scanThemes, expandMode, relOk, validateManifest, packIdOk };
 };

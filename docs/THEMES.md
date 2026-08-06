@@ -1,6 +1,6 @@
 # Theme packs — format specification
 
-**Format version: 1** · **Doc version 0.20**
+**Format version: 1** · **Doc version 0.30**
 Status: format is FINAL for v1, and the loader that consumes it is LIVE
 (conductor RS-THEMES v1): packs in `themes/` are scanned at boot and on rescan
 (`POST /api/themes/rescan`, or any library Rescan), and `GET /api/themes` reports
@@ -127,3 +127,32 @@ licence, attribution if the licence demands it. CC0/own-work keeps life simple.
 
 Zip the folder, share the zip. Import via the app (Play → Import theme) or by
 unzipping into `themes/` and hitting Rescan.
+
+## Export & import API
+
+The conductor round-trips packs as a single `<pack>.roomscape-theme.zip`
+(zero dependencies — a minimal built-in ZIP reader/writer over node zlib):
+
+- `GET /api/theme/export/<pack>` — downloads the pack folder as-is (entry
+  names prefixed `<pack>/`, dotfiles skipped), served as an `application/zip`
+  attachment. **Packs only** for now: exporting a Design-authored (legacy)
+  mode requires walking its media refs through the host's private library —
+  that export ships with the app's theme UI phase.
+- `POST /api/theme/import` — body is the raw zip bytes (`application/zip` or
+  `application/octet-stream`; JSON `{"b64":"..."}` is also accepted, matching
+  `/api/upload`). The zip must hold `<pack>/theme.json` under one shared
+  top-level folder, or be rootless with `theme.json` at the top — the pack id
+  is then derived from the manifest `name`, slugified to `a-z 0-9 -`.
+  - Everything validates **before anything is written**: pack-id charset, the
+    manifest (the same checks the scanner runs), and a per-file whitelist
+    (`png jpg jpeg webp gif mp4 webm mov mp3 wav flac md json txt`) — any
+    other file type is rejected with the offending names listed.
+  - If the pack already exists the import answers `409 {"error":"exists"}`.
+    Retry with `?overwrite=1`: the new files are staged to a temp folder, the
+    old pack is **moved** to `themes/.trash/<pack>.replaced-<timestamp>`
+    (user data is never deleted), the staged folder is renamed live, and a
+    rescan registers the modes. Success reply:
+    `{ok, pack, replaced, modes, missing, warnings}`.
+  - Limits & rejections: 100 MB upload cap, 200 MB uncompressed, 500 entries;
+    encrypted entries, zip64 archives, absolute paths, drive letters and `..`
+    segments are all refused (backslashes are normalized before checking).

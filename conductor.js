@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v4.54 (community release v0.31)
+   Roomscape — Conductor backend  v4.64 (community release v0.32)
+   v4.64 (Phase 3b): RS-THEME-ZIP — theme export/import over zip, zero deps
+          (conductor-lib/zip.js, node zlib). GET /api/theme/export/<pack>
+          downloads <pack>.roomscape-theme.zip (pack folder as-is, entries
+          prefixed <pack>/); POST /api/theme/import[?overwrite=1] takes raw
+          zip bytes (or JSON {b64}), validates BEFORE writing (pack id,
+          manifest via themes.validateManifest, media-type whitelist,
+          containment), 409 on conflict; overwrite stages to a temp dir and
+          moves the old pack to themes/.trash/ (never deletes). Router gains
+          "/*" prefix routes for the dynamic export path.
    v4.54 (Phase 3a): RS-THEMES v1 — theme-pack loader. THEMES_DIR (env or
           APP_DIR/themes) is scanned at boot + /api/rescan; each pack folder's
           theme.json contributes IN-MEMORY modes under "<pack>.<modeId>" (dot
@@ -15,9 +24,6 @@
           at-rest-semantic site (panic, defaultState, MODE_ORDER, rhythms fallback,
           weatherFx, isAmbient); settings.ha.tvs seeded from the live layout;
           settings.ha.tvQuirks passthrough documented for the app's TV wake shim.
-   v4.34: config.json loader (layout/ha/rooms/edges/atRestMode, legacy fallback),
-          music-token redaction on all profile-serving endpoints, superseded
-          ROOMS phase blocks removed (-657 lines), engine.js legacy trim.
    Zero-dependency Node server (built-in http + crypto only).
    - serves the web app + the "Images & Videos" media folder
    - scans the media folder and assigns REAL images to each frame per mode
@@ -2117,7 +2123,10 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     var fs = require('fs'), path = require('path');
     var routes = [];                                      // { method, path, fn }
     var router = {
-      add: function (method, p, fn) { routes.push({ method: String(method || 'GET').toUpperCase(), path: p, fn: fn }); return router; },
+      // RS-THEME-ZIP (Phase 3b): a path ending "/*" prefix-matches (stored with its
+      // trailing slash) so routes can carry one dynamic tail segment, e.g.
+      // /api/theme/export/<packId>. Exact paths behave exactly as before.
+      add: function (method, p, fn) { var wild = typeof p === 'string' && p.length > 1 && p.slice(-2) === '/*'; routes.push({ method: String(method || 'GET').toUpperCase(), path: wild ? p.slice(0, -1) : p, wild: wild, fn: fn }); return router; },
       count: function () { return routes.length; }
     };
     router.json = function (real, code, obj) { real.json(code, obj); };
@@ -2147,7 +2156,9 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       var u; try { u = new URL(req.url, 'http://localhost'); } catch (e) { return; }
       var m = (req.method || 'GET').toUpperCase(), hit = null;
       for (var i = 0; i < routes.length; i++) {
-        if (routes[i].path === u.pathname && (routes[i].method === m || routes[i].method === 'ALL')) { hit = routes[i]; break; }
+        var rt = routes[i];
+        if ((rt.method === m || rt.method === 'ALL')
+            && (rt.wild ? (u.pathname.indexOf(rt.path) === 0 && u.pathname.length > rt.path.length) : rt.path === u.pathname)) { hit = rt; break; }
       }
       if (!hit) return;                                   // not ours — pass through to the other listeners/main handler
       var W = res.writeHead.bind(res), E = res.end.bind(res), SH = res.setHeader.bind(res);
@@ -5070,4 +5081,180 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     rescanThemes();   // boot scan (profiles + settings are loaded by now)
     console.log('[themes] RS-THEMES v1 ready — GET /api/themes · POST /api/themes/rescan (dir: ' + THEMES_DIR + ')');
   } catch (e) { try { console.error('[themes] init failed:', e && e.message); } catch (x) {} }
+})();
+
+/* ================= ROOMSCAPE THEME EXPORT/IMPORT (RS-THEME-ZIP, Phase 3b, 2026-08-06) =================
+   Share a theme pack as ONE file: <pack>.roomscape-theme.zip. Zero npm deps —
+   conductor-lib/zip.js is a pure minimal ZIP reader/writer over node zlib
+   (CRC32-checked, rejects encrypted/zip64/unsafe paths, 500-entry + 200 MB
+   uncompressed caps).
+     GET  /api/theme/export/<packId>
+          Zips THEMES_DIR/<packId> as-is (theme.json + all files, entry names
+          prefixed "<packId>/", dotfiles skipped) -> application/zip attachment.
+          PACKS ONLY: exporting a Design-authored legacy mode needs ref-walking
+          the host's private media library — that lands with the app UI phase
+          (docs/THEMES.md "Export & import API").
+     POST /api/theme/import[?overwrite=1]
+          Body: raw zip bytes (application/zip | application/octet-stream), or
+          JSON {b64} for tooling parity with /api/upload. 100 MB cap.
+          Zip layout: all entries under ONE top-level dir containing theme.json
+          (that dir = pack id), OR rootless with theme.json at the top (pack id
+          derived from the manifest name, slugified to a-z0-9-).
+          Validation happens BEFORE anything touches disk: pack-id charset,
+          manifest via themes.validateManifest (same checks the scanner runs),
+          per-entry media-type whitelist. Existing pack -> 409 {error:'exists'}
+          unless ?overwrite=1. Writes stage into THEMES_DIR/.import-<ts> (dot
+          dirs are invisible to scanThemes), then swap: old pack MOVES to
+          THEMES_DIR/.trash/<pack>.replaced-<ts> (user data is never deleted),
+          staged dir renames live, rescan registers the modes.
+          Reply 200 {ok,pack,replaced,modes,missing,warnings} | 409 | 400/413. */
+;(function () {
+  try {
+    var R = global.__rsRouter; if (!R) { console.log('[theme-zip] router missing — skipped'); return; }
+    var zip = require(path.join(LIB_DIR, 'zip.js'));                 // pure module — no ctx
+    var themesV = require(path.join(LIB_DIR, 'themes.js'))(ctx);     // validateManifest/packIdOk (stateless)
+    var IMPORT_CAP = 100 * 1024 * 1024;
+    var ENTRY_OK = /\.(png|jpe?g|webp|gif|mp4|webm|mov|mp3|wav|flac|md|json|txt)$/i;
+
+    function packDirSafe(id) {   // THEMES_DIR/<id>, charset-vetted + containment-checked
+      if (!themesV.packIdOk(id)) return null;
+      var abs = path.resolve(THEMES_DIR, id);
+      return abs.indexOf(path.resolve(THEMES_DIR) + path.sep) === 0 ? abs : null;
+    }
+    function walk(dir, base, out) {  // recursive file list, forward-slash rels, dotfiles skipped
+      fs.readdirSync(dir, { withFileTypes: true }).forEach(function (en) {
+        if (en.name.charAt(0) === '.') return;
+        var abs = path.join(dir, en.name), rel = base ? base + '/' + en.name : en.name;
+        if (en.isDirectory()) walk(abs, rel, out);
+        else if (en.isFile()) out.push({ name: rel, data: fs.readFileSync(abs) });
+      });
+      return out;
+    }
+    function slugify(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); }
+
+    /* ---- EXPORT ---- */
+    R.add('GET', '/api/theme/export/*', function (req, res, u, real) {
+      var id = decodeURIComponent(u.pathname.slice('/api/theme/export/'.length));
+      var pdir = packDirSafe(id);
+      if (!pdir) return real.json(400, { ok: false, error: 'bad pack id (allowed: a-z 0-9 -)' });
+      var st = null; try { st = fs.statSync(pdir); } catch (e) {}
+      if (!st || !st.isDirectory()) return real.json(404, { ok: false, error: 'no such pack', pack: id });
+      try {
+        var files = walk(pdir, id, []);              // entry names prefixed <pack>/
+        if (!files.some(function (f) { return f.name === id + '/theme.json'; }))
+          return real.json(400, { ok: false, error: 'pack has no theme.json', pack: id });
+        var buf = zip.writeZip(files);
+        real.writeHead(200, { 'Content-Type': 'application/zip',
+                              'Content-Disposition': 'attachment; filename="' + id + '.roomscape-theme.zip"',
+                              'Content-Length': buf.length,
+                              'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+        real.end(buf);
+        console.log('[theme-zip] exported ' + id + ' (' + files.length + ' file(s), ' + buf.length + ' bytes)');
+      } catch (e) { real.json(500, { ok: false, error: String(e && e.message).slice(0, 200) }); }
+    });
+
+    /* ---- IMPORT ---- */
+    function importZip(buf, overwrite, real) {
+      function bad(msg) { return real.json(400, { ok: false, error: msg }); }
+      var entries;
+      try { entries = zip.readZip(buf); } catch (e) { return bad('zip: ' + (e && e.message)); }
+      if (!entries.length) return bad('zip has no files');
+
+      // root layout: one shared top-level dir with theme.json, or rootless theme.json
+      var tops = {}; entries.forEach(function (en) { tops[en.name.split('/')[0]] = 1; });
+      var topKeys = Object.keys(tops), packId = null, strip = 0;
+      if (topKeys.length === 1 && entries.some(function (en) { return en.name === topKeys[0] + '/theme.json'; })) {
+        packId = topKeys[0]; strip = topKeys[0].length + 1;
+      } else if (entries.some(function (en) { return en.name === 'theme.json'; })) {
+        strip = 0;                                   // rootless — pack id derived from the manifest below
+      } else return bad('no theme.json (expected <pack>/theme.json under ONE top-level folder, or theme.json at the zip root)');
+
+      // manifest FIRST — nothing touches disk until it validates
+      var manName = strip ? (packId + '/theme.json') : 'theme.json', man = null;
+      for (var i = 0; i < entries.length; i++) if (entries[i].name === manName) { man = entries[i]; break; }
+      var j; try { j = JSON.parse(man.data.toString('utf8').replace(/^\uFEFF/, '')); }
+      catch (e) { return bad('theme.json: ' + (e && e.message)); }
+      if (!packId) packId = slugify(j && j.name);
+      if (!themesV.packIdOk(packId)) return bad('bad pack id ' + JSON.stringify(packId) + ' (allowed: a-z 0-9 -)');
+      var v = themesV.validateManifest(j);
+      if (v.errors.length) return bad('theme.json invalid: ' + v.errors.join('; '));
+
+      // media-type whitelist — report EVERY offender, not just the first
+      var rels = [], badTypes = [];
+      entries.forEach(function (en) {
+        var rel = en.name.slice(strip);
+        if (!rel) return;
+        if (ENTRY_OK.test(rel)) rels.push({ rel: rel, data: en.data });
+        else badTypes.push(rel);
+      });
+      if (badTypes.length) return bad('disallowed file type(s): ' + badTypes.join(', ').slice(0, 400));
+
+      var liveDir = packDirSafe(packId);
+      if (!liveDir) return bad('bad pack id');
+      var exists = fs.existsSync(liveDir);
+      if (exists && !overwrite) return real.json(409, { ok: false, error: 'exists', pack: packId });
+
+      var ts = new Date().toISOString().replace(/[:.]/g, '-');
+      var tmpDir = path.join(THEMES_DIR, '.import-' + ts + '-' + process.pid);
+      try {
+        fs.mkdirSync(tmpDir, { recursive: true });
+        rels.forEach(function (f) {
+          var abs = path.resolve(tmpDir, f.rel);     // belt+braces — readZip already vets every name
+          if (abs.indexOf(tmpDir + path.sep) !== 0) throw new Error('containment: ' + f.rel);
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          fs.writeFileSync(abs, f.data);
+        });
+        if (exists) {                                // overwrite = swap, NEVER delete
+          var trash = path.join(THEMES_DIR, '.trash');
+          fs.mkdirSync(trash, { recursive: true });
+          fs.renameSync(liveDir, path.join(trash, packId + '.replaced-' + ts));
+        }
+        fs.renameSync(tmpDir, liveDir);
+      } catch (e) {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (x) {}
+        return bad('import failed: ' + String(e && e.message).slice(0, 200));
+      }
+      var report = [];
+      try { if (typeof global.__rsThemesRemerge === 'function') report = global.__rsThemesRemerge() || []; } catch (e) {}
+      var entry = null;
+      for (var k = 0; k < report.length; k++) if (report[k] && report[k].id === packId) { entry = report[k]; break; }
+      var warnings = entry ? (entry.warnings || []).slice() : [];
+      if (entry && entry.errors && entry.errors.length) entry.errors.forEach(function (e2) { warnings.push('scan: ' + e2); });
+      console.log('[theme-zip] imported ' + packId + ' (' + rels.length + ' file(s)' + (exists ? ', old pack -> .trash' : '') + ')');
+      real.json(200, { ok: true, pack: packId, replaced: exists,
+                       modes: entry ? entry.modes : [], missing: entry ? entry.missing : [], warnings: warnings });
+    }
+
+    R.add('POST', '/api/theme/import', function (req, res, u, real) {
+      var overwrite = u.searchParams.get('overwrite') === '1';
+      var isJson = String(req.headers['content-type'] || '').indexOf('application/json') >= 0;
+      var capBody = isJson ? Math.ceil(IMPORT_CAP * 4 / 3) + 4096 : IMPORT_CAP;   // b64 inflates 4/3
+      var chunks = [], len = 0, over = false;
+      req.on('data', function (c) {
+        if (over) return;
+        len += c.length;
+        if (len > capBody) { over = true; try { real.json(413, { ok: false, error: 'body exceeds 100 MB cap' }); } catch (e) {} try { req.destroy(); } catch (e) {} return; }
+        chunks.push(c);
+      });
+      req.on('error', function () {});
+      req.on('end', function () {
+        if (over) return;
+        var buf;
+        try {
+          buf = Buffer.concat(chunks);
+          if (isJson) {
+            var b = JSON.parse(buf.toString('utf8') || '{}');
+            if (!b || typeof b.b64 !== 'string' || !b.b64) return real.json(400, { ok: false, error: 'JSON import needs {b64}' });
+            buf = Buffer.from(b.b64, 'base64');
+          }
+        } catch (e) { return real.json(400, { ok: false, error: 'bad body: ' + (e && e.message) }); }
+        if (!buf.length) return real.json(400, { ok: false, error: 'empty body' });
+        if (buf.length > IMPORT_CAP) return real.json(413, { ok: false, error: 'zip exceeds 100 MB cap' });
+        try { importZip(buf, overwrite, real); }
+        catch (e) { try { real.json(500, { ok: false, error: String(e && e.message).slice(0, 200) }); } catch (x) {} }
+      });
+    });
+
+    console.log('[theme-zip] RS-THEME-ZIP ready — GET /api/theme/export/<pack> · POST /api/theme/import (cap 100 MB)');
+  } catch (e) { try { console.error('[theme-zip] init failed:', e && e.message); } catch (x) {} }
 })();

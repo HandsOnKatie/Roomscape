@@ -1,6 +1,14 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.3 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.4 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.4 (Phase 3b, RS-THEME-ZIP): export/import over zip — boot 1 now points
+   THEMES_DIR at a TMP COPY of the repo's themes/ (import/overwrite writes
+   .trash + replaces the pack; the repo tree must stay byte-identical).
+   Checks: export ocean-depths -> 200 application/zip with PK magic, the zip
+   parses (conductor-lib/zip.js) and carries theme.json + the pano scene;
+   re-import -> 409 exists; ?overwrite=1 -> ok with mode ocean-depths.main and
+   the old pack moved into THEMES_DIR/.trash; a crafted '..' zip entry -> 400;
+   unknown pack export -> 404.
    v1.3 (Phase 3a, RS-THEMES v1): theme-pack loader — /api/themes lists the
    shipped ocean-depths pack (mode 'ocean-depths.main', non-empty missing[]),
    the expanded in-memory profile has layout-sized frames[] + __theme__/ scene
@@ -23,6 +31,12 @@ const ROOT = path.join(__dirname, '..');
 const PORT = 8190;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-smoke-'));
 
+// v1.4: boot 1 gets a THROWAWAY copy of the repo's themes/ — the import
+// overwrite check replaces the pack and writes .trash, which must never
+// touch the repo working tree (APP_DIR=ROOT would otherwise scan it live).
+const themesTmp = path.join(tmp, 'themes');
+fs.cpSync(path.join(ROOT, 'themes'), themesTmp, { recursive: true });
+
 const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
   env: Object.assign({}, process.env, {
     PORT: String(PORT),
@@ -30,6 +44,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
     STATE_FILE: path.join(tmp, 'state.json'),
     PROFILES_FILE: path.join(tmp, 'profiles1.json'),   // v1.3: round-trip check WRITES profiles — scratch file, never the repo store
     MEDIA_DIR: path.join(tmp, 'media'),          // v1.1: upload check writes here, not the repo
+    THEMES_DIR: themesTmp,                       // v1.4: import/overwrite checks write here, not the repo
     HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
   }),
   stdio: ['ignore', 'pipe', 'pipe']
@@ -56,6 +71,26 @@ function get(p, port) {
       let s = ''; r.on('data', c => s += c);
       r.on('end', () => res({ code: r.statusCode, body: s }));
     }).on('error', rej).on('timeout', function () { this.destroy(new Error('timeout')); });
+  });
+}
+// v1.4: binary-safe GET (zip export) + raw-body POST (zip import)
+function getBuf(p, port) {
+  return new Promise((res, rej) => {
+    http.get({ host: '127.0.0.1', port: port || PORT, path: p, timeout: 8000 }, r => {
+      const cs = []; r.on('data', c => cs.push(c));
+      r.on('end', () => res({ code: r.statusCode, headers: r.headers, body: Buffer.concat(cs) }));
+    }).on('error', rej).on('timeout', function () { this.destroy(new Error('timeout')); });
+  });
+}
+function postRaw(p, buf, ctype, port) {
+  return new Promise((res, rej) => {
+    const rq = http.request({ host: '127.0.0.1', port: port || PORT, path: p, method: 'POST', timeout: 8000,
+      headers: { 'Content-Type': ctype || 'application/zip', 'Content-Length': buf.length } }, r => {
+      let s = ''; r.on('data', c => s += c);
+      r.on('end', () => res({ code: r.statusCode, body: s }));
+    });
+    rq.on('error', rej).on('timeout', function () { rq.destroy(new Error('timeout')); });
+    rq.end(buf);
   });
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -176,6 +211,47 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     const rs = await post('/api/themes/rescan', {});
     let rsj = null; try { rsj = JSON.parse(rs.body); } catch (e) {}
     check('POST /api/themes/rescan re-reports the pack', rs.code === 200 && !!(rsj && rsj.ok && (rsj.themes || []).some(t => t && t.id === 'ocean-depths')), 'code ' + rs.code + ' ' + rs.body.slice(0, 160));
+
+    // ---- v1.4 (Phase 3b): RS-THEME-ZIP — export/import over zip ----
+    const zipLib = require(path.join(ROOT, 'conductor-lib', 'zip.js'));
+
+    const exp = await getBuf('/api/theme/export/ocean-depths');
+    check('GET /api/theme/export/ocean-depths -> 200 application/zip with PK magic',
+      exp.code === 200 && String(exp.headers['content-type']).indexOf('application/zip') === 0
+        && exp.body.length > 4 && exp.body[0] === 0x50 && exp.body[1] === 0x4b,
+      'code ' + exp.code + ' ct ' + exp.headers['content-type'] + ' len ' + exp.body.length);
+
+    let znames = [];
+    try { znames = zipLib.readZip(exp.body).map(e => e.name); } catch (e) { znames = ['readZip: ' + e.message]; }
+    check('exported zip parses and carries ocean-depths/theme.json + scenes/depths_pano.png',
+      znames.indexOf('ocean-depths/theme.json') >= 0 && znames.indexOf('ocean-depths/scenes/depths_pano.png') >= 0,
+      JSON.stringify(znames).slice(0, 300));
+
+    const exp404 = await getBuf('/api/theme/export/no-such-pack');
+    check('GET /api/theme/export/<unknown> -> 404', exp404.code === 404, 'code ' + exp404.code);
+
+    const imp409 = await postRaw('/api/theme/import', exp.body, 'application/zip');
+    let i9 = null; try { i9 = JSON.parse(imp409.body); } catch (e) {}
+    check('POST /api/theme/import of an existing pack -> 409 {error:"exists"}',
+      imp409.code === 409 && !!(i9 && i9.error === 'exists' && i9.pack === 'ocean-depths'),
+      'code ' + imp409.code + ' ' + imp409.body.slice(0, 160));
+
+    const impOw = await postRaw('/api/theme/import?overwrite=1', exp.body, 'application/octet-stream');
+    let io = null; try { io = JSON.parse(impOw.body); } catch (e) {}
+    check('POST /api/theme/import?overwrite=1 -> ok:true with mode ocean-depths.main',
+      impOw.code === 200 && !!(io && io.ok && io.pack === 'ocean-depths'
+        && Array.isArray(io.modes) && io.modes.indexOf('ocean-depths.main') >= 0),
+      'code ' + impOw.code + ' ' + impOw.body.slice(0, 200));
+
+    let trashed = [];
+    try { trashed = fs.readdirSync(path.join(themesTmp, '.trash')); } catch (e) {}
+    check('overwrite moved the old pack into THEMES_DIR/.trash (never deleted)',
+      trashed.some(n => n.indexOf('ocean-depths.replaced-') === 0), JSON.stringify(trashed));
+
+    const evil = zipLib.writeZip([{ name: '../evil/theme.json', data: Buffer.from('{"format":1}') }]);
+    const impBad = await postRaw('/api/theme/import', evil, 'application/zip');
+    check('POST /api/theme/import rejects a ".." zip entry -> 400',
+      impBad.code === 400, 'code ' + impBad.code + ' ' + impBad.body.slice(0, 160));
   }
   child.kill();
 
