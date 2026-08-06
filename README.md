@@ -51,6 +51,18 @@ docker compose up -d
 
 Then see [docs/INSTALL.md](docs/INSTALL.md) for display-PC kiosk setup, and [docs/HA-SETUP.md](docs/HA-SETUP.md) for the Home Assistant bridge.
 
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| **[REFERENCE.md](docs/REFERENCE.md)** | **The complete reference** — requirements, assumptions, architecture, every feature, full config/API/WebSocket reference, limits, known constraints |
+| [FAQ.md](docs/FAQ.md) | "Do I need six TVs?", "Why no artwork?", "Can I use it remotely?" — the questions people actually ask |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom → cause → fix |
+| [THEMES.md](docs/THEMES.md) | Theme pack format + how to build and share one |
+| [INSTALL.md](docs/INSTALL.md) · [HA-SETUP.md](docs/HA-SETUP.md) | Kiosk setup · Home Assistant bridge |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together (contributors) |
+| [SECURITY.md](SECURITY.md) · [SECURITY-AUDIT-2026-08.md](docs/SECURITY-AUDIT-2026-08.md) | The security model · the pre-release audit and what it found |
+
 ## Project status
 
 Roomscape was extracted from a live private installation (the original six-frame dining-room build) and generalized for other people's rooms. The engine is battle-tested; the packaging is new, and nothing has been deployed publicly yet.
