@@ -19,7 +19,7 @@
 
   "ha": {
     "tvs": { "L1": "", "L2": "", "L3": "", "R1": "", "R2": "", "R3": "" },
-    "tvQuirks": { "": "samsung-frame" },
+    "tvQuirks": { "media_player.example_frame_tv": "samsung-frame" },
     "lightZones": {
       "main": ["light.example_ceiling"],
       "accent": ["light.example_lamp_1", "light.example_lamp_2"]

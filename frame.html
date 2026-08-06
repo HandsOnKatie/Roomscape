@@ -126,15 +126,35 @@
 <script>
 /* ==== RULES WALL OVERLAY v2 (2026-07-18) — per-TV roles + sound + speed ====
    Polls /api/rules/state: { show, game, videoId, name, sections, ts,
-     sound:{on,frame}, layout:{L1..R3: video|setup|turn|win|tips|none}, speed }
-   Default layout = the classic wall (L1 setup, L3 your-turn, R1 winning,
-   R3 tips, L2+R2 video). speed drives the YouTube iframe API (rambly
+     sound:{on,frame}, layout:{<frameId>: video|setup|turn|win|tips|none}, speed }
+   Phase 2c: the per-TV role map is computed from the adopted wall layout
+   (window.__rsLayout) — wall 1 carries setup (first frame) + your-turn (last
+   frame), wall 2 winning + tips, everything between is the video; extra walls
+   repeat the pair pattern; single-frame walls show the video. The old literal
+   map (L1 setup, L3 turn, R1 win, R3 tips, L2+R2 video) stays as the fallback
+   before the layout arrives / on file:// — and IS the computed result on the
+   reference two-walls-of-three. speed drives the YouTube iframe API (rambly
    tutorials at 1.5x); sound unmutes the chosen TV. ==== */
 (function () {
   var qs2 = new URLSearchParams(location.search);
   var fid = (qs2.get('frame') || qs2.get('id') || 'L1').toUpperCase();
   var TITLES = { setup: 'SETUP', turn: 'YOUR TURN', win: 'WINNING', tips: 'TABLE TIPS' };
   var DEFROLE = { L1: 'setup', L2: 'video', L3: 'turn', R1: 'win', R2: 'video', R3: 'tips' };
+  function roleFor(f) {   /* Phase 2c: layout-derived role, DEFROLE until the layout lands */
+    var L = window.__rsLayout;
+    if (!(L && L.walls && Object.keys(L.walls).length)) return DEFROLE[f] || 'none';
+    var ks = Object.keys(L.walls), PAIRS = [['setup', 'turn'], ['win', 'tips']];
+    for (var i = 0; i < ks.length; i++) {
+      var w = L.walls[ks[i]] || [], ix = w.indexOf(f);
+      if (ix < 0) continue;
+      if (w.length === 1) return 'video';
+      var pr = PAIRS[i % 2];
+      if (ix === 0) return pr[0];
+      if (ix === w.length - 1) return pr[1];
+      return 'video';
+    }
+    return DEFROLE[f] || 'none';
+  }
   var cur = null, box = null, spdTimers = [];
   function esc2(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
   function clearT() { spdTimers.forEach(function (t) { clearTimeout(t); }); spdTimers = []; }
@@ -142,7 +162,7 @@
   function show(st) {
     clear();
     cur = st.game + '|' + st.ts;
-    var role = (st.layout && st.layout[fid]) || DEFROLE[fid] || 'none';
+    var role = (st.layout && st.layout[fid]) || roleFor(fid);   /* Phase 2c: server override → layout-derived → literal fallback */
     if (role !== 'video' && role !== 'none' && st.sections && st.sections[role] === false) role = 'none';
     if (role === 'video' && !st.videoId) role = 'none';
     if (role === 'none') return;   /* this TV keeps showing the scene */

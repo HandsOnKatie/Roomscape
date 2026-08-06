@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v4.34 (community release v0.20)
+   Roomscape — Conductor backend  v4.44 (community release v0.21)
+   v4.44 (Phase 2c): layout ROLES (primary/centers/corners/sweepOrder) always
+          derived when config doesn't set them + roleFrames() helper; TTS/cue-card/
+          charades/rules-sound frame defaults + sweep order flow from roles instead
+          of L1..R3 literals; AT_REST replaces the 'dining' magic literal at every
+          at-rest-semantic site (panic, defaultState, MODE_ORDER, rhythms fallback,
+          weatherFx, isAmbient); settings.ha.tvs seeded from the live layout;
+          settings.ha.tvQuirks passthrough documented for the app's TV wake shim.
    v4.34: config.json loader (layout/ha/rooms/edges/atRestMode, legacy fallback),
           music-token redaction on all profile-serving endpoints, superseded
           ROOMS phase blocks removed (-657 lines), engine.js legacy trim.
@@ -65,10 +72,37 @@ const LAYOUT = (function () {
       (Array.isArray(L.walls[k]) ? L.walls[k] : []).forEach(function (f) { L.frames.push(f); });
     });
   }
-  L.roles = (CONFIG.layout && CONFIG.layout.roles) || null;
+  /* Phase 2c: layout ROLES — every install gets a full role map, configured or
+     not. Derived defaults: sweepOrder = frames in layout order; centers = the
+     middle frame of each wall (index floor(n/2)); corners = first + last frame
+     of each wall (deduped, capped at 4, in wall order — the classic L1/L3/R1/R3);
+     primary = the LAST wall's center. primary is deliberately the last wall's
+     center, not the first: the reference install's TTS speaker, cue-card frame
+     and charades guesser have always defaulted to R2, and deriving from the
+     first wall would silently move them to L2. CONFIG.layout.roles overrides
+     any subset of these keys. */
+  var derived = (function () {
+    var centers = [], corners = [];
+    Object.keys(L.walls).forEach(function (k) {
+      var w = Array.isArray(L.walls[k]) ? L.walls[k] : [];
+      if (!w.length) return;
+      centers.push(w[Math.floor(w.length / 2)]);
+      if (corners.indexOf(w[0]) < 0) corners.push(w[0]);
+      if (corners.indexOf(w[w.length - 1]) < 0) corners.push(w[w.length - 1]);
+    });
+    return { primary: centers[centers.length - 1] || L.frames[0],
+             centers: centers, corners: corners.slice(0, 4), sweepOrder: L.frames.slice() };
+  })();
+  L.roles = Object.assign(derived, (CONFIG.layout && CONFIG.layout.roles) || {});
   L.orientation = (CONFIG.layout && CONFIG.layout.orientation) || 'portrait';
   return L;
 })();
+/* Phase 2c: role lookup — always an array; 'primary' resolves to [primary]. */
+function roleFrames(role) {
+  var r = (LAYOUT.roles || {})[role];
+  if (role === 'primary') return r ? [r] : [LAYOUT.frames[0]];
+  return Array.isArray(r) ? r.slice() : [];
+}
 
 const DEFAULT_PROFILES = {
   dining:   { name:'At rest', accent:'#c9a35e', light:'gallery',  ambience:'Quiet room',        music:'—',                  kidSafe:true,  scene:'atrest_default',            frames:['pano','pano','pano','pano','pano','pano'], matte:{ on:true, color:'#f2eee4', width:7, texture:'paper' } }
@@ -79,7 +113,12 @@ const DEFAULT_SETTINGS = {
   /* Home Assistant room mapping — fill tvs with your HA media_player entity ids
      (Settings → Devices & services → Entities in HA). Editable in profiles.json. */
   ha: {
-    tvs: { L1: '', L2: '', L3: '', R1: '', R2: '', R3: '' },
+    tvs: LAYOUT.frames.reduce(function (m, f) { m[f] = ''; return m; }, {}),   // Phase 2c: seeded from the live layout, not L1..R3 literals
+    /* Phase 2c: per-entity TV quirk map — { "<media_player entity_id>": "samsung-frame" }.
+       'samsung-frame' = turn_on is a no-op / turn_off is off-only, so the app's wake
+       shim rewrites turn_on/turn_off to toggle for these entities. Set here or via
+       CONFIG.ha.tvQuirks (merged on load). */
+    tvQuirks: {},
     lights: [],
     /* v2.47 lighting ZONES — independently controllable per mode (profile.lightZones).
        Fill each zone with your HA light entity ids, e.g. main: ['light.living_room']. */
@@ -179,10 +218,10 @@ const PHASE_FX = {
 };
 
 function defaultState() {
-  return { game:'dining', mode:'dining', phase:'dining', brightness:45, warmth:30, light:'gallery',
+  return { game:AT_REST, mode:AT_REST, phase:AT_REST, brightness:45, warmth:30, light:'gallery',   // Phase 2c: at-rest id from config, not 'dining'
     zones:{ Main:true,'Cove wash':false,'Frame halos':false,'Under-table':false,Candles:false,Sconces:false },
     channels:{ music:0, amb:0, sfx:40, narr:0, master:70 }, mutes:{ music:false, amb:false, sfx:false, narr:false, master:false },
-    frames:['pano','pano','pano','pano','pano','pano'], frameImages:[null,null,null,null,null,null], overlayImages:[null,null,null,null,null,null], chroma:null, fx:null, kid:false, night:false, live:false, rev:0 };
+    frames:LAYOUT.frames.map(function(){return 'pano';}), frameImages:LAYOUT.frames.map(function(){return null;}), overlayImages:LAYOUT.frames.map(function(){return null;}), chroma:null, fx:null, kid:false, night:false, live:false, rev:0 };   // Phase 2c: sized from the layout
 }
 
 // v2.51: never wholesale-replace authoritative state with a client payload.
@@ -360,7 +399,7 @@ function resolveOverlays(s) {
     s.reveal = null;
   }
   /* v2.0 weather fills EMPTY effect slots on weather-enabled modes (hand-picked effects always win) */
-  if ((settings.weather || {}).on && weather.effect && (prof.weatherFx === true || (prof.weatherFx !== false && s.game === 'dining'))) {
+  if ((settings.weather || {}).on && weather.effect && (prof.weatherFx === true || (prof.weatherFx !== false && s.game === AT_REST))) {   // Phase 2c: at-rest semantic
     const wp = '/media/' + weather.effect.split('/').map(encodeURIComponent).join('/');
     s.effectImages = s.effectImages.map(function (e, i) { return e || ((s.frames[i] === 'pano' || s.frames[i] === 'portrait') ? wp : null); });
   }
@@ -396,12 +435,12 @@ function persist() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try
 /* -------------------- state transitions -------------------- */
 let arrivalTimer = null;
 function applyProfile(id) {
-  const p = profiles[id] || profiles.dining; clearTimeout(arrivalTimer);
+  const p = profiles[id] || profiles[AT_REST] || profiles.dining; clearTimeout(arrivalTimer);   // Phase 2c: at-rest id from config; 'dining' stays the shipped-store safety net
   activePhaseId = null;                                  // v2.2: a (re)launched mode starts at its base phase
   state.wallFit = p.wallFit || 'auto';   // v2.1: mode-level wall layout (auto | fill | span)
-  if (id === 'dining' || !profiles[id]) {
-    state.game = 'dining'; state.mode = 'dining'; state.phase = 'dining'; state.live = false;
-    state.frames = profiles.dining.frames.slice(); state.light = 'gallery'; state.channels.music = 0; state.channels.amb = 0;
+  if (id === AT_REST || !profiles[id]) {
+    state.game = AT_REST; state.mode = AT_REST; state.phase = AT_REST; state.live = false;
+    state.frames = (profiles[AT_REST] || profiles.dining).frames.slice(); state.light = 'gallery'; state.channels.music = 0; state.channels.amb = 0;
   } else {
     state.game = id; state.frames = p.frames.slice(); state.light = p.light;
     state.mode = 'arrival'; state.phase = 'arrival'; state.live = true;
@@ -410,11 +449,11 @@ function applyProfile(id) {
   }
   bump('game:' + id);
 }
-const MODE_ORDER = ['dining','arrival','immersion','intermission','boss','victory','defeat','cleanup'];
+const MODE_ORDER = [AT_REST,'arrival','immersion','intermission','boss','victory','defeat','cleanup'];   // Phase 2c: first entry = the at-rest mode
 const SCARY = { boss: true, defeat: true };
 function setMode(id) {
   if (MODE_ORDER.indexOf(id) < 0) return;
-  if (id === 'dining') return applyProfile('dining');
+  if (id === AT_REST) return applyProfile(AT_REST);
   if (state.kid && SCARY[id]) return;
   state.mode = id; state.phase = id;
   if (id === 'victory') state.light = 'victory';
@@ -467,12 +506,13 @@ let audioTimers = [];
 let lastAudioGame = null;   // v2.2: keyed game|phase
 let lastAudioAudio = null;  // the audio config we started (for its outro)
 const AUDIO_FRAMES = LAYOUT.frames;   // v2.62: single source of truth
+function sweepFrames() { const so = roleFrames('sweepOrder'); return so.length ? so : AUDIO_FRAMES; }   // Phase 2c: roles.sweepOrder wins
 function clearAudioTimers() { audioTimers.forEach((t) => clearTimeout(t)); audioTimers = []; }
 function audioHits(spatial, gain) {
   const g = (gain != null ? gain : 1);
   if (spatial === 'random') { const f = AUDIO_FRAMES[Math.floor(Math.random() * AUDIO_FRAMES.length)]; return [{ f, at: 0, gain: g }]; }
-  if (spatial === 'sweep') return AUDIO_FRAMES.map((f, i) => ({ f, at: i * 180, gain: g }));
-  if (spatial === 'sweeprev') return AUDIO_FRAMES.slice().reverse().map((f, i) => ({ f, at: i * 180, gain: g }));
+  if (spatial === 'sweep') return sweepFrames().map((f, i) => ({ f, at: i * 180, gain: g }));
+  if (spatial === 'sweeprev') return sweepFrames().slice().reverse().map((f, i) => ({ f, at: i * 180, gain: g }));
   if (AUDIO_FRAMES.indexOf(spatial) >= 0) return [{ f: spatial, at: 0, gain: g }];
   return AUDIO_FRAMES.map((f) => ({ f, at: 0, gain: g }));   // 'all' / default
 }
@@ -534,7 +574,7 @@ let mqttClient = null; const MQTT_PREFIX = process.env.MQTT_PREFIX || 'immersion
       if (topic === 'game/start' && m.profile) applyProfile(m.profile);
       else if (topic === 'game/phase' && m.phase) setMode(m.phase);
       else if (topic === 'room/mode' && m.mode) setMode(m.mode);
-      else if (topic === 'room/panic') applyProfile('dining'); });
+      else if (topic === 'room/panic') applyProfile(AT_REST); });   // Phase 2c
     mqttClient.on('error', (e) => console.log('[mqtt] error', e.message));
   } catch (e) { console.log('[mqtt] failed', e.message); }
 })();
@@ -712,7 +752,7 @@ function setPrompter(b) {
       ix = ((ix % items.length) + items.length) % items.length;
       const item = items[ix], isImg = item.indexOf('img:') === 0;
       promptState = {
-        deck: deck, frame: b.frame || (promptState && promptState.frame) || 'R2',
+        deck: deck, frame: b.frame || (promptState && promptState.frame) || LAYOUT.roles.primary || 'R2',   // Phase 2c: cue cards land on the primary role
         index: ix, count: items.length, style: b.style || meta.style || 'placard',
         img: isImg ? '/decks/' + item.slice(4).split('/').map(encodeURIComponent).join('/') : null,
         text: isImg ? null : item, next: items[(ix + 1) % items.length]
@@ -730,7 +770,7 @@ function setPrompter(b) {
 /* ---- Room Rhythms ---- */
 let holdUntil = 0;
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-function isAmbient() { const pf = profiles[state.game]; return state.game === 'dining' || !!(pf && pf.ambient); }
+function isAmbient() { const pf = profiles[state.game]; return state.game === AT_REST || !!(pf && pf.ambient); }   // Phase 2c
 function rhythmTarget(now) {
   const r = settings.rhythms || {}; if (!r.on) return null;
   now = now || new Date();
@@ -755,7 +795,7 @@ function rhythmTarget(now) {
   if (day && profiles[day.mode]) return { mode: day.mode, why: day.name || 'special day', special: day.name || null };
   const m = (r.months || {})[String(now.getMonth() + 1)];
   if (m && profiles[m]) return { mode: m, why: MONTH_NAMES[now.getMonth()] + ' default' };
-  return { mode: 'dining', why: 'fallback' };
+  return { mode: AT_REST, why: 'fallback' };   // Phase 2c: rhythms settle to the at-rest mode
 }
 function rhythmNextChange() {                              // next moment the target differs from now's target (36 h scan, 5-min grid)
   const t0 = rhythmTarget(); if (!t0) return null;
@@ -1035,9 +1075,11 @@ function coreHandler(req, res) {
           settings.music.token = prevTok;
         }
       }
-      // v2.52: 'dining' is the panic/default mode — applyProfile('dining') throws if
-      // it's gone. The pguard wipe-block only rejects payloads missing ≥2 modes, so
-      // a payload missing just dining could slip through. Re-seed it.
+      // v2.52: 'dining' is the shipped at-rest/panic profile — applyProfile falls
+      // back to it when the AT_REST id is missing, so it must always exist. The
+      // pguard wipe-block only rejects payloads missing ≥2 modes, so a payload
+      // missing just dining could slip through. Re-seed it. (Phase 2c: AT_REST may
+      // point at another profile id, but profiles.dining stays the safety net.)
       if (!profiles.dining) profiles.dining = Object.assign({}, DEFAULT_PROFILES.dining);
       // v2.52: report a failed disk write honestly — the client used to see
       // "Saved" while profiles.json still held the old content.
@@ -1065,7 +1107,7 @@ function coreHandler(req, res) {
     if (p.startsWith('/api/game/')) { applyProfile(decodeURIComponent(p.split('/')[3])); return sendJSON(res, 200, { ok: true, game: state.game, frameImages: state.frameImages, overlayImages: state.overlayImages }); }
     if (p.startsWith('/api/mode/')) { setMode(p.split('/')[3]); return sendJSON(res, 200, { ok: true, mode: state.mode }); }
     if (p.startsWith('/api/tag/'))  { const id = decodeURIComponent(p.split('/')[3] || ''); const g = tagmap[id]; if (g) { applyProfile(g); return sendJSON(res, 200, { ok: true, game: g }); } return sendJSON(res, 404, { ok: false, error: 'unknown tag', id }); }
-    if (p === '/api/panic') { applyProfile('dining'); return sendJSON(res, 200, { ok: true }); }
+    if (p === '/api/panic') { applyProfile(AT_REST); return sendJSON(res, 200, { ok: true }); }   // Phase 2c
     if (p === '/api/phase' && req.method === 'POST') return readBody(req, (b) => {   // v2.2 phases
       const ok = applyPhase((b && b.phase) || null);
       sendJSON(res, ok ? 200 : 404, { ok: !!ok, phase: activePhaseId, game: state.game, phases: phaseListFor(state.game) });
@@ -1156,7 +1198,8 @@ function coreHandler(req, res) {
       b = b || {};
       const sound = b.sound || 'sounds/Whoosh.wav';
       const gain = (b.gain != null) ? b.gain : 1;
-      const ALL = LAYOUT.frames;   // v2.62: single source of truth
+      const SO = roleFrames('sweepOrder');   // Phase 2c: sweeps travel in the sweepOrder role (defaults to layout order)
+      const ALL = SO.length ? SO : LAYOUT.frames;
       // client may send a ready-made hits list [{f,at,gain}] (supports bounce/orbit repeats);
       // otherwise build one from mode/frames/stepMs.
       let hits = Array.isArray(b.hits) ? b.hits : null;
@@ -1165,7 +1208,7 @@ function coreHandler(req, res) {
         if (b.reverse) order.reverse();
         const step = (b.stepMs != null) ? b.stepMs : 180;
         if (b.mode === 'all') hits = order.map((f) => ({ f, at: 0 }));
-        else if (b.mode === 'one') hits = [{ f: (b.frame || 'L1'), at: 0 }];
+        else if (b.mode === 'one') hits = [{ f: (b.frame || LAYOUT.frames[0]), at: 0 }];   // Phase 2c: no 'L1' literal
         else hits = order.map((f, i) => ({ f, at: i * step }));   // default: sweep
       }
       const msg = { ie: true, type: 'audio', action: 'play', sound, hits, gain, t: Date.now() };
@@ -3279,7 +3322,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
    RS-RULES-SOUND v1 — sound control for the Rules Wall tutorial videos.
    The centre-screen YouTube embeds were hard-muted (mute=1 in frame.html), so
    tutorials were silent and "not very useful". This block adds:
-     POST /api/rules/sound {on, frame:'L1'..'R3'|'both'} -> set where sound plays
+     POST /api/rules/sound {on, frame:<frame id>|'both'} -> set where sound plays
      GET  /api/rules/state  -> response is intercepted and merged with
                                { sound:{on,frame} }; ts is offset by a revision
                                counter so every sound change re-renders the wall
@@ -3292,8 +3335,12 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function () {
   try {
     if (typeof server === 'undefined' || !server || !server.prependListener) return;
-    var SND = { on: false, frame: 'L2' }, REV = 0;
-    var OKF = { L1: 1, L2: 1, L3: 1, R1: 1, R2: 1, R3: 1, both: 1 };
+    /* Phase 2c: default sound TV = first centers-role frame (L2 on the reference
+       layout); the whitelist is the live layout's frames, not L1..R3 literals. */
+    var CTRS = roleFrames('centers');
+    var SND = { on: false, frame: CTRS[0] || LAYOUT.frames[0] }, REV = 0;
+    var OKF = { both: 1 };
+    LAYOUT.frames.forEach(function (f) { OKF[f] = 1; });
 
     server.prependListener('request', function (req, res) {
       var u; try { u = new URL(req.url, 'http://localhost'); } catch (e) { return; }
@@ -4304,7 +4351,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         var fname = 'tts_' + slug(text) + '_' + h + '.mp3';
         var rel = 'sounds/voice/' + fname, abs = path.join(VOICE_DIR, fname), cached = false;
         function done() {
-          if (b.speak !== false) { try { fireAudio(rel, b.where || ((settings.tts || {}).where) || 'R2', (b.gain != null ? b.gain : 1)); } catch (e) {} }   /* v4.24: one speaker, not six */
+          if (b.speak !== false) { try { fireAudio(rel, b.where || ((settings.tts || {}).where) || LAYOUT.roles.primary || 'R2', (b.gain != null ? b.gain : 1)); } catch (e) {} }   /* v4.24: one speaker, not six · Phase 2c: default = primary role */
           try { logDiary('tts', '🗣 ' + (cached ? '(cached) ' : '') + text.slice(0, 60)); } catch (e) {}
           out(200, { ok: true, file: rel, cached: cached, voice: voice });
         }
@@ -4333,9 +4380,11 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
                  scary ambience, dawn fades the lights back up; roles live in
                  state (the tablet console is host-eyes-only; frames never
                  render them); auto win-check
-   Wall roles (LOCKED): L1+R1 rules card · L2+R2 game screens (heads-up word on
-   the screen OPPOSITE the guesser) · L3+R3 live scores; quiz answers override
-   the four corners during question/reveal, restored after.
+   Wall roles (LOCKED semantics, Phase 2c ids from layout): first frame of each
+   wall = rules card · centers role = game screens (heads-up word on the screen
+   OPPOSITE the guesser) · last frame of each wall = live scores; quiz answers
+   override the corners role during question/reveal, restored after. On the
+   reference two-walls-of-three that is exactly the old L1+R1 / L2+R2 / L3+R3 map.
    Endpoints:  GET  /api/games                     defs + decks (+kind/kidSafe)
                POST /api/games/start {id, cfg}
                POST /api/games/action {action, …}
@@ -4351,6 +4400,14 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
   try {
     var httpPG = require('http');
     var G = { s: null, timers: [], items: [], order: [], qs: [], maStarted: false };
+
+    /* Phase 2c: charades game-screen TVs come from layout roles, not L2/R2
+       literals. centers = the per-wall middle screens; primary = the default
+       guesser TV (R2 on the reference layout — see the LAYOUT roles comment). */
+    function pgCenters() { var c = roleFrames('centers'); return c.length ? c : LAYOUT.frames.slice(); }
+    function pgPrimary() { return (LAYOUT.roles && LAYOUT.roles.primary) || pgCenters()[0] || LAYOUT.frames[0]; }
+    function pgCenter(id) { return pgCenters().indexOf(id) >= 0 ? id : pgPrimary(); }          // any non-center input snaps to primary (old: anything not 'L2' → 'R2')
+    function pgOpposite(id) { var o = pgCenters().filter(function (f) { return f !== id; }); return o.length ? o[0] : id; }
 
     var GAMES = [
       { id: 'charades', name: 'Charades', icon: '🎭', players: [3, 12], deck: 'words',
@@ -4567,8 +4624,8 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 
       if (def.id === 'charades') {
         s.variant = def.variants.indexOf(cfg.variant) >= 0 ? cfg.variant : 'headsup';
-        s.guesserTv = (cfg.guesserTv === 'L2') ? 'L2' : 'R2';
-        s.wordTv = (s.variant === 'classic') ? s.guesserTv : (s.guesserTv === 'R2' ? 'L2' : 'R2');
+        s.guesserTv = pgCenter(cfg.guesserTv);   // Phase 2c: centers role (was 'L2'/'R2')
+        s.wordTv = (s.variant === 'classic') ? s.guesserTv : pgOpposite(s.guesserTv);
         s.roundS = Math.max(30, Math.min(300, +cfg.roundS || 90));
         s.roundPts = 0;
         G.items = deckItemsById(s.deckId);
@@ -4653,8 +4710,8 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         }
         if (a === 'nextplayer') { chNextPlayer(); return done(); }
         if (a === 'setguesser') {
-          var tv = (b && b.tv === 'L2') ? 'L2' : 'R2';
-          s.guesserTv = tv; s.wordTv = (s.variant === 'classic') ? tv : (tv === 'R2' ? 'L2' : 'R2');
+          var tv = pgCenter(b && b.tv);   // Phase 2c: centers role (was 'L2'/'R2')
+          s.guesserTv = tv; s.wordTv = (s.variant === 'classic') ? tv : pgOpposite(tv);
           return done();
         }
       }

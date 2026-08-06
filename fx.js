@@ -1,5 +1,11 @@
 /* ===================================================================
-   The Immersion Engine — transition & effects layer (fx.js)  v1.40
+   The Immersion Engine — transition & effects layer (fx.js)  v1.50
+   v1.50 (Phase 2c): party-game wall roles from the layout — quiz A–D corners
+   come from the corners role (layout.roles), rules/scores/game screens from
+   wall position (IE.slotOf/IE.wallSizeOf: slot 0 = rules, last slot = scores,
+   between = game); the halo suppressor keys on the served at-rest id
+   (__rsLayout.atRest / IE.ATREST) instead of 'dining'. Identical output on
+   the reference two-walls-of-three layout.
    v1.40: N-frame layouts — all wall-of-3 math (slot = idx%3, wall = idx<3,
    pano width 300%, GL slice /3.0) now flows from IE.LAYOUT via IE.slotOf /
    IE.wallKeyOf / IE.wallFramesOf / IE.wallSizeOf; fallback frame lists come
@@ -1017,7 +1023,16 @@
     'quiz': ['The question fills the wall', 'A · B · C · D live on the corner TVs', 'Stand under your answer!', 'Wrong corners go dark — the right one blooms'],
     'werewolf': ['Night: eyes closed while the room speaks', 'Wolves hunt · Seer peeks · Healer saves', 'Day: debate, accuse, banish', 'The village wins when the wolves are gone']
   };
-  var PG_CORNER = { L1: 0, L3: 1, R1: 2, R3: 3 };
+  /* Phase 2c: quiz answer corners come from the layout's corners role (falls
+     back to the classic map when no layout has been adopted, e.g. file://).
+     Only the first four corner frames carry A–D. */
+  var PG_CORNER_FALLBACK = { L1: 0, L3: 1, R1: 2, R3: 3 };
+  function pgCornerIx(fid) {
+    var L = window.__rsLayout;
+    var cs = (L && L.roles && L.roles.corners) || (IE.LAYOUT && IE.LAYOUT.roles && IE.LAYOUT.roles.corners);
+    if (cs && cs.length) { var ix = cs.indexOf(fid); return (ix >= 0 && ix < 4) ? ix : null; }
+    var v = PG_CORNER_FALLBACK[fid]; return v == null ? null : v;
+  }
   function pgEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
   function pgFmt(ms) { var t = Math.max(0, Math.ceil(ms / 1000)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); }
   function pgScores(pg) {
@@ -1077,7 +1092,7 @@
       return;
     }
     pgCss();
-    var cornerIx = PG_CORNER[fid];
+    var cornerIx = pgCornerIx(fid);   /* Phase 2c */
     var quizCorner = pg.id === 'quiz' && pg.question && pg.question.opts && (pg.phase === 'question' || pg.phase === 'reveal') && cornerIx != null;
     var wrongReveal = quizCorner && pg.question.revealed && cornerIx !== pg.question.correctIx;
     /* reveal blacks out the wrong corners via the v1.28 blackout machinery */
@@ -1099,9 +1114,17 @@
           if (pg.question.revealed) cls += ' bloom';
           html = '<div class="ie-pg-ans"><span class="L">' + 'ABCD'.charAt(cornerIx) + '</span>' + pgEsc(pg.question.opts[cornerIx] || '') + '</div>';
         }
-      } else if (fid === 'L1' || fid === 'R1') html = pgRulesCard(pg);
-      else if (fid === 'L3' || fid === 'R3') html = pgScores(pg);
-      else html = pgGameScreen(pg, fid);
+      } else {
+        /* Phase 2c: wall position, not frame-id literals — slot 0 = rules card,
+           last slot = scores, everything between = game screen. Single-frame
+           walls and unknown ids get the game screen. Identical to the old
+           L1/R1 · L3/R3 · L2/R2 split on the reference layout. */
+        var pgFi = IE.FRAME_IDS.indexOf(fid);
+        var pgWsz = pgFi >= 0 ? IE.wallSizeOf(pgFi) : 0, pgSlot = pgFi >= 0 ? IE.slotOf(pgFi) : -1;
+        if (pgWsz > 1 && pgSlot === 0) html = pgRulesCard(pg);
+        else if (pgWsz > 1 && pgSlot === pgWsz - 1) html = pgScores(pg);
+        else html = pgGameScreen(pg, fid);
+      }
       el.className = cls;
       el.innerHTML = html;
     }
@@ -1491,7 +1514,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
     var __hs = (__hp.size != null && +__hp.size > 0) ? +__hp.size : 18;
     var __ho = (__hp.op != null && __hp.op !== '') ? Math.max(0, Math.min(100, +__hp.op)) : 33;
     var __ha = ('0' + Math.round(__ho * 2.55).toString(16)).slice(-2);
-    view.halo.style.boxShadow = (state.zones && state.zones['Frame halos'] && state.game !== 'dining' && __ho > 0) ? 'inset 0 0 ' + __hs + 'vmin 1vmin ' + __hc + __ha : 'none';
+    view.halo.style.boxShadow = (state.zones && state.zones['Frame halos'] && state.game !== (((window.__rsLayout || {}).atRest) || IE.ATREST || 'dining') && __ho > 0) ? 'inset 0 0 ' + __hs + 'vmin 1vmin ' + __hc + __ha : 'none';   /* Phase 2c: at-rest id from the layout */
     view.id.textContent = IE.FRAME_IDS[idx];
 
     /* overlay layer (porthole / window frame) — persistent; optional green-screen keying.

@@ -1,5 +1,6 @@
 /* ===================================================================
-   The Immersion Engine — shared core (engine.js)  v0.78  (v0.78: N-frame layouts — IE.LAYOUT + IE.setLayout(l) adopt the conductor's /api/layout; IE.wallKeyOf/wallFramesOf/slotOf/wallSizeOf replace all wall-of-3 math; FRAME_IDS mutated in place so old references stay live; pano width set per wall size)
+   The Immersion Engine — shared core (engine.js)  v0.88  (v0.88 Phase 2c: layout ROLES — IE.deriveRoles/IE.roleFrames + LAYOUT.roles always populated; setLayout also adopts roles/orientation/atRest from /api/layout; IE.ATREST replaces the 'dining' at-rest literal in defaultState/halo/startGame/panic/labels)
+   (v0.78: N-frame layouts — IE.LAYOUT + IE.setLayout(l) adopt the conductor's /api/layout; IE.wallKeyOf/wallFramesOf/slotOf/wallSizeOf replace all wall-of-3 math; FRAME_IDS mutated in place so old references stay live; pano width set per wall size)
    (v0.77: WS liveness watchdog — client ping every 20s + force-close after 90s silence so a silently-dead TCP connection re-enters the reconnect loop instead of freezing the frame [L2/Goldfinger incident 2026-07-24]; WebSocket constructor throw now re-arms retry instead of permanently killing the loop)
    (v0.76: 'viz' + 'playlist' frame kinds — music visualiser & now-playing become Wall content types; IE.VIZ_PALETTES + palStops/palAt/palCss shared colour palettes (gold, VU, sunset, ocean, aurora, fire, ice, neon, rainbow, viridis, plasma, magma); social dispatch → IE.onSocial; captions opt-in; frame ids in hello; '_' profiles hidden)
    Classic script (no modules) so it works over file:// AND http://
@@ -16,9 +17,35 @@
      GET /api/layout ({frames,walls}) — FRAME_IDS is mutated IN PLACE so every
      module that captured a reference (fx.js appended blocks etc.) stays current. */
   var LAYOUT = { walls: { L: ['L1', 'L2', 'L3'], R: ['R1', 'R2', 'R3'] } };
+  var ATREST = 'dining';   /* Phase 2c: the at-rest mode id — adopted from /api/layout.atRest; 'dining' = shipped default */
   function _wallsFromFrames(fr) { var w = {}; fr.forEach(function (f) { var k = String(f).charAt(0); (w[k] = w[k] || []).push(f); }); return w; }
+  /* Phase 2c: derived layout roles — same algorithm as the conductor's LAYOUT
+     block: centers = each wall's floor(n/2) frame; corners = first+last of each
+     wall (deduped, cap 4); sweepOrder = frames in order; primary = the LAST
+     wall's center (R2 on the reference layout — preserves the historical
+     TTS/cue-card/guesser default). */
+  function deriveRoles(walls, frames) {
+    var centers = [], corners = [];
+    Object.keys(walls).forEach(function (k) {
+      var w = Array.isArray(walls[k]) ? walls[k] : [];
+      if (!w.length) return;
+      centers.push(w[Math.floor(w.length / 2)]);
+      if (corners.indexOf(w[0]) < 0) corners.push(w[0]);
+      if (corners.indexOf(w[w.length - 1]) < 0) corners.push(w[w.length - 1]);
+    });
+    return { primary: centers[centers.length - 1] || frames[0],
+             centers: centers, corners: corners.slice(0, 4), sweepOrder: frames.slice() };
+  }
+  LAYOUT.roles = deriveRoles(LAYOUT.walls, FRAME_IDS);
+  function roleFrames(role) {   /* always an array; 'primary' → [primary] */
+    var r = (LAYOUT.roles || {})[role];
+    if (role === 'primary') return r ? [r] : [FRAME_IDS[0]];
+    return Array.isArray(r) ? r.slice() : [];
+  }
   function setLayout(l) {
     if (!l) return;
+    if (l.atRest) { ATREST = l.atRest; if (global.IE) global.IE.ATREST = ATREST; }   /* Phase 2c */
+    if (l.orientation) LAYOUT.orientation = l.orientation;                            /* Phase 2c */
     var walls = (l.walls && Object.keys(l.walls).length) ? l.walls
       : (Array.isArray(l.frames) && l.frames.length ? _wallsFromFrames(l.frames) : null);
     if (!walls) return;
@@ -27,6 +54,7 @@
       : Object.keys(walls).reduce(function (a, k) { return a.concat(walls[k]); }, []);
     FRAME_IDS.length = 0;
     frames.forEach(function (f) { FRAME_IDS.push(f); });
+    LAYOUT.roles = (l.roles && l.roles.primary) ? l.roles : deriveRoles(LAYOUT.walls, FRAME_IDS);   /* Phase 2c: server roles win, else derive */
   }
   function wallKeyOf(idx) {
     var f = FRAME_IDS[idx], ks = Object.keys(LAYOUT.walls);
@@ -123,7 +151,7 @@
 
   function defaultState() {
     return {
-      game:'dining', mode:'dining', phase:'dining',
+      game:ATREST, mode:ATREST, phase:ATREST,   /* Phase 2c: at-rest id from the layout, not 'dining' */
       brightness:45, warmth:30, light:'gallery',
       zones:{ Main:true,'Cove wash':false,'Frame halos':false,'Under-table':false,Candles:false,Sconces:false },
       channels:{ music:0, amb:0, sfx:40, narr:0, master:70 },
@@ -318,7 +346,7 @@
     var dark = (100 - bright) / 100 * 0.7 + (m.dim || 0);
     dark = Math.max(0, Math.min(0.85, dark));
     var tintOpacity = 0.55 + (state.warmth / 100) * 0.4;
-    var halo = (state.zones && state.zones['Frame halos'] && state.game !== 'dining')
+    var halo = (state.zones && state.zones['Frame halos'] && state.game !== ATREST)   /* Phase 2c */
       ? 'inset 0 0 18vmin 1vmin ' + g.accent + '55' : 'none';
 
     inner += '<div class="ie-tint" style="background:' + tint + ';opacity:' + tintOpacity + '"></div>';
@@ -557,7 +585,7 @@
 
     // build sub-grids
     q('[data-games]').innerHTML = GAME_ORDER.map(function (k) { var g = GAMES[k];
-      return '<button class="ie-g ' + (k === 'dining' ? 'dining' : '') + '" data-game="' + k + '"><span class="gg">' + g.glyph + '</span><span class="gn">' + g.name + '</span><span class="gd">' + g.desc + '</span></button>';
+      return '<button class="ie-g ' + (k === ATREST ? 'dining' : '') + '" data-game="' + k + '"><span class="gg">' + g.glyph + '</span><span class="gn">' + g.name + '</span><span class="gd">' + g.desc + '</span></button>';   /* Phase 2c: .dining stays the CSS class name, keyed to the at-rest id */
     }).join('');
     q('[data-modes]').innerHTML = MODE_ORDER.map(function (k) { var m = MODES[k];
       return '<button class="ie-m" data-mode="' + k + '"><span class="mn"><span class="swt" style="background:' + m.sw + '"></span>' + m.icon + ' ' + m.name + '</span><span class="md">' + m.d + '</span></button>';
@@ -587,10 +615,10 @@
     function commit() { state.rev = (state.rev || 0) + 1; render(); onChange(state); }
 
     function startGame(k) {
-      state.game = k; var g = GAMES[k];
+      state.game = k; var g = GAMES[k] || GAMES[ATREST] || GAMES.dining;   /* Phase 2c: unknown/at-rest ids fall back safely */
       state.frames = g.frames.slice(); state.light = g.light;
-      if (k === 'dining') {
-        state.mode = 'dining'; state.live = false;
+      if (k === ATREST) {
+        state.mode = ATREST; state.live = false;
         state.channels.music = 0; state.channels.amb = 0; setFaders();
         toast('Room restored to Dining Mode');
       } else {
@@ -605,7 +633,7 @@
     function setMode(k) {
       if (state.kid && MODES[k].scary) { toast('Kid-Safe on — ' + MODES[k].name + ' softened'); return; }
       state.mode = k;
-      if (k === 'dining') { startGame('dining'); return; }
+      if (k === ATREST) { startGame(ATREST); return; }   /* Phase 2c */
       if (k === 'victory') state.light = 'victory';
       if (k === 'boss') state.zones['Frame halos'] = true;
       toast('Mode: ' + MODES[k].name); commit();
@@ -644,15 +672,15 @@
     q('[data-night]').onclick = function () { state.night = !state.night; q('[data-night]').classList.toggle('on', state.night);
       if (state.night && state.channels.master > 45) { state.channels.master = 45; setFaders(); }
       toast('Late-Night ' + (state.night ? 'ON — volume & bass capped' : 'OFF')); commit(); };
-    q('[data-panic]').onclick = function () { startGame('dining'); toast('⟲ Panic — restoring Dining'); };
+    q('[data-panic]').onclick = function () { startGame(ATREST); toast('⟲ Panic — room restored'); };   /* Phase 2c */
     q('[data-next]').onclick = function () { var i = MODE_ORDER.indexOf(state.mode); if (i < MODE_ORDER.length - 1) setMode(MODE_ORDER[i + 1]); };
     q('[data-prev]').onclick = function () { var i = MODE_ORDER.indexOf(state.mode); if (i > 0) setMode(MODE_ORDER[i - 1]); };
 
     /* ---- render (control reflects its own state) ---- */
     function render() {
-      var g = GAMES[state.game] || GAMES.dining, m = MODES[state.mode] || MODES.dining;   // trimmed registries: server-hydrated games / unknown modes fall back to dining
+      var g = GAMES[state.game] || GAMES[ATREST] || GAMES.dining, m = MODES[state.mode] || MODES[ATREST] || MODES.dining;   // trimmed registries: server-hydrated games / unknown modes fall back to the at-rest entry (Phase 2c)
       q('[data-world]').textContent = g.name;
-      q('[data-phase]').textContent = (state.game === 'dining' ? 'At rest' : m.name);
+      q('[data-phase]').textContent = (state.game === ATREST ? 'At rest' : m.name);
       q('[data-dot]').className = 'ie-dot' + (state.live ? ' live' : '');
       qa('.ie-g').forEach(function (c) { c.classList.toggle('sel', c.dataset.game === state.game); });
       qa('.ie-m').forEach(function (b) { b.classList.toggle('active', b.dataset.mode === state.mode); b.classList.toggle('disabled', state.kid && MODES[b.dataset.mode].scary); });
@@ -661,8 +689,8 @@
       var ci = MODE_ORDER.indexOf(state.mode);
       qa('.ie-ps').forEach(function (p, idx) { p.classList.toggle('cur', idx === ci); p.classList.toggle('done', idx < ci); });
       state.frames.forEach(function (kind, i) { var fp = q('[data-fp="' + i + '"]'); if (fp) { fp.style.background = kind === 'off' ? '#0c0d12' : g.pano; fp.textContent = kind === 'pano' ? g.glyph : (KIND_ICON[kind] || ''); fp.style.opacity = kind === 'off' ? .4 : 1; } var fk = q('[data-fk="' + i + '"]'); if (fk) fk.textContent = kind; });
-      q('[data-npt]').textContent = state.game === 'dining' ? 'Silent' : g.music;
-      q('[data-npa]').textContent = 'Ambience: ' + (state.game === 'dining' ? '—' : g.ambience);
+      q('[data-npt]').textContent = state.game === ATREST ? 'Silent' : g.music;      /* Phase 2c */
+      q('[data-npa]').textContent = 'Ambience: ' + (state.game === ATREST ? '—' : g.ambience);
     }
 
     /* ---- hydrate the Launch gallery from the server's real profiles (v0.7) ----
@@ -689,7 +717,7 @@
         });
         q('[data-games]').innerHTML = order.map(function (k) {
           var g = GAMES[k];
-          return '<button class="ie-g big ' + (k === 'dining' ? 'dining' : '') + '" data-game="' + k + '"'
+          return '<button class="ie-g big ' + (k === ATREST ? 'dining' : '') + '" data-game="' + k + '"'   /* Phase 2c: CSS class name unchanged */
             + (g._thumb ? ' style="background-image:linear-gradient(rgba(8,9,12,.2),rgba(8,9,12,.78)),url(\'' + g._thumb + '\')"' : '')
             + '><span class="gg">' + (g._thumb ? '' : g.glyph) + '</span><span class="gn">' + g.name + '</span><span class="gd">' + g.desc + '</span></button>';
         }).join('');
@@ -833,6 +861,7 @@
   global.IE = {
     FRAME_IDS: FRAME_IDS, LAYOUT: LAYOUT, setLayout: setLayout,   /* v0.78 */
     wallKeyOf: wallKeyOf, wallFramesOf: wallFramesOf, slotOf: slotOf, wallSizeOf: wallSizeOf,
+    ATREST: ATREST, deriveRoles: deriveRoles, roleFrames: roleFrames,   /* Phase 2c (IE.ATREST is refreshed by setLayout) */
     FRAMEKINDS: FRAMEKINDS, GAMES: GAMES, GAME_ORDER: GAME_ORDER,
     MODES: MODES, MODE_ORDER: MODE_ORDER, LIGHT_SCENES: LIGHT_SCENES, ZONES: ZONES, CHANNELS: CHANNELS,
     defaultState: defaultState, renderFrame: renderFrame, buildControlDeck: buildControlDeck,

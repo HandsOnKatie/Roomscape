@@ -1,5 +1,12 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.42
+   RoomScape — Play & Design app (app.js)  v3.52
+   v3.52 (Phase 2c): layout ROLES + configurable at-rest id + TV quirk map —
+   party-game mockups/guesser TV, cue-card default frame, rules SEC map and
+   rules-sound segments all flow from layout.roles (primary/centers/corners)
+   instead of L1..R3 literals; every at-rest-semantic 'dining' literal reads
+   layout.atRest (served by /api/layout); the Samsung-Frame TV wake shim keys
+   on settings.ha.tvQuirks ({entity_id:'samsung-frame'}) with the legacy
+   'dining'-substring match kept as fallback.
    v3.42 (Phase 2a): N-frame layouts — buildCanvas creates the wall hosts
    (label + row per wall key, grid = one column per wall) from the conductor's
    /api/layout instead of the fixed Left/Right pair in app.html; boot calls
@@ -360,6 +367,13 @@
      Everything frame-count-shaped in this file flows from `layout` / FRAME_IDS. */
   function wallsFromFrames(fr) { var w = {}; fr.forEach(function (f) { var k = String(f).charAt(0); (w[k] = w[k] || []).push(f); }); return w; }
   var layout = { frames: IE.FRAME_IDS.slice(), walls: wallsFromFrames(IE.FRAME_IDS) };
+  /* Phase 2c: roles (primary/centers/corners/sweepOrder) + at-rest mode id ride
+     the layout. Until boot()'s /api/layout lands we derive the same defaults the
+     conductor would (engine.js IE.deriveRoles = shared algorithm). */
+  layout.roles = IE.deriveRoles ? IE.deriveRoles(layout.walls, layout.frames) : null;
+  layout.atRest = 'dining';
+  function layoutRoles() { return layout.roles || {}; }
+  function atRestId() { return layout.atRest || 'dining'; }
   var FRAME_IDS = layout.frames;
   window.__rsLayout = layout;   // appended blocks read this instead of their own ['L1'…] lists
   function wallOfIdx(i) { var f = FRAME_IDS[i], ks = Object.keys(layout.walls); for (var k = 0; k < ks.length; k++) { if (layout.walls[ks[k]].indexOf(f) >= 0) return ks[k]; } return ks[0] || 'L'; }
@@ -600,12 +614,16 @@
       if (lj && lj.ok && Array.isArray(lj.frames) && lj.frames.length) {
         layout.frames = lj.frames.slice();
         layout.walls = (lj.walls && Object.keys(lj.walls).length) ? lj.walls : wallsFromFrames(layout.frames);
+        layout.roles = (lj.roles && lj.roles.primary) ? lj.roles
+          : (IE.deriveRoles ? IE.deriveRoles(layout.walls, layout.frames) : layout.roles);   /* Phase 2c: server roles win, else derive */
+        layout.atRest = lj.atRest || layout.atRest;                                          /* Phase 2c */
         FRAME_IDS = layout.frames;
         window.__rsLayout = layout;
         if (IE.setLayout) IE.setLayout(layout);   /* Phase 2a: engine helpers (slotOf/wallKeyOf/…) follow the adopted layout */
         if ($$('#walls .fr').length && $$('#walls .fr').length !== FRAME_IDS.length) $$('#walls .fr').forEach(function (f) { f.remove(); });   // boot retry after a layout change: force a canvas rebuild
       }
       profiles = r[0].profiles || {}; tagmap = r[0].tagmap || {}; settings = r[0].settings || {};
+      window.__rsSettings = settings;   /* Phase 2c: appended blocks (TV wake shim) read settings.ha.tvQuirks from here */
       /* v2.54: purge modes soft-deleted more than 30 days ago — single pass, persist only if something went */
       var purged = 0;
       Object.keys(profiles).forEach(function (k) { var d = profiles[k] && profiles[k].deleted; if (d && (Date.now() - d) > 30 * 86400000) { delete profiles[k]; purged++; } });
@@ -685,7 +703,7 @@
     var m = IE.MODES[s.mode];
     var phName = null;
     if (s.phaseId && s.phases) s.phases.forEach(function (p2) { if (p2.id === s.phaseId) phName = p2.name; });
-    $('#nowphase').textContent = (s.game === 'dining' ? 'At rest' : (phName || (m ? m.name : s.mode))) + (s.musicHold ? ' · ♪ music' : '');
+    $('#nowphase').textContent = (s.game === atRestId() ? 'At rest' : (phName || (m ? m.name : s.mode))) + (s.musicHold ? ' · ♪ music' : '');   /* Phase 2c */
     var th = p ? sceneThumb(p.scene) : '';
     $('#nowthumb').style.backgroundImage = th ? 'url("' + th + '")' : 'none';
     var accent = (p && p.accent) || '#c9a35e';
@@ -2119,7 +2137,7 @@
     var picks = (gmRoster || []).slice(0, id === 'werewolf' ? 7 : 4);
     var c = { players: picks };
     if (id === 'charades') {
-      c.variant = 'headsup'; c.guesserTv = 'R2'; c.roundS = 90;
+      c.variant = 'headsup'; c.guesserTv = layoutRoles().primary || (FRAME_IDS.indexOf('R2') >= 0 ? 'R2' : FRAME_IDS[0]); c.roundS = 90;   /* Phase 2c: primary role (R2 on the reference layout) */
       var d0 = gmDecks.find(function (d) { return d.kind === 'words' && (!gmKid() || d.kidSafe); });
       c.deck = d0 ? d0.id : null;
     }
@@ -2157,17 +2175,29 @@
       var V = { headsup: '🙆 Heads-Up — word behind the guesser’s head', classic: '🎬 Classic — actor peeks at one TV, everyone guesses', reverse: '👯 Reverse — whole team acts, one player guesses' };
       h += '<div class="zt">How to play it</div><div class="chips">'
         + Object.keys(V).map(function (k) { return '<button class="chip' + (gmCfg.variant === k ? ' on' : '') + '" data-gmv="' + k + '">' + V[k] + '</button>'; }).join('') + '</div>';
-      var wordTv = gmCfg.variant === 'classic' ? gmCfg.guesserTv : (gmCfg.guesserTv === 'R2' ? 'L2' : 'R2');
-      function tv(id) {
-        if (id === 'L2' || id === 'R2') {
+      /* Phase 2c: the mockup wall is built from the live layout — per wall the
+         first frame is the rules card, the last the scores, and the centers role
+         carries the game screens (identical to the old L1/L2/L3 · R1/R2/R3 map). */
+      var chCT = (layoutRoles().centers || []).slice();
+      if (!chCT.length) chCT = [gmCfg.guesserTv || FRAME_IDS[0]];
+      if (chCT.indexOf(gmCfg.guesserTv) < 0) gmCfg.guesserTv = layoutRoles().primary || chCT[0];
+      var wordTv = gmCfg.variant === 'classic' ? gmCfg.guesserTv : (chCT.filter(function (f) { return f !== gmCfg.guesserTv; })[0] || gmCfg.guesserTv);
+      function tv(id, slotRole) {
+        if (slotRole === 'game') {
           var isW = id === wordTv, isG = id === gmCfg.guesserTv && gmCfg.variant !== 'classic';
           return '<div class="gmtv ' + (isW ? 'word' : 'guesser') + '" data-gmtv="' + id + '">' + id + '<span class="w">' + (isW ? 'WORD' : '😶 ' + (gmCfg.variant === 'reverse' ? 'guesser' : 'guesser')) + '</span></div>';
         }
-        return '<div class="gmtv">' + id + '<span class="w">' + ((id === 'L1' || id === 'R1') ? '📜 RULES' : '🏆 SCORES') + '</span></div>';
+        return '<div class="gmtv">' + id + '<span class="w">' + (slotRole === 'rules' ? '📜 RULES' : '🏆 SCORES') + '</span></div>';
       }
       h += '<div class="zt">' + (gmCfg.variant === 'classic' ? 'Which TV does the actor peek at?' : 'The wall has fixed roles — tap the game screen behind the guesser') + '</div>'
-        + '<div class="gmwall"><div class="grp">' + tv('L1') + tv('L2') + tv('L3') + '</div><div class="grp">' + tv('R1') + tv('R2') + tv('R3') + '</div></div>'
-        + '<div class="hint" style="text-align:center;margin-top:-4px">L1 + R1 how-to-play · L2 + R2 game screens (word shows OPPOSITE the guesser) · L3 + R3 live scores</div>';
+        + '<div class="gmwall">' + Object.keys(layout.walls).map(function (wk) {
+            var w = layout.walls[wk] || [];
+            return '<div class="grp">' + w.map(function (id, ix) {
+              var slotRole = chCT.indexOf(id) >= 0 ? 'game' : (ix === 0 ? 'rules' : (ix === w.length - 1 ? 'scores' : 'game'));
+              return tv(id, slotRole);
+            }).join('') + '</div>';
+          }).join('') + '</div>'
+        + '<div class="hint" style="text-align:center;margin-top:-4px">First TV of each wall: how-to-play · centre TVs: game screens (word shows OPPOSITE the guesser) · last TV: live scores</div>';
       h += '<div class="gmr2" style="margin-top:14px"><label class="gmfld"><span>Deck' + (gmKid() ? ' · kid-safe only' : '') + '</span><select id="gmdeck">' + gmDeckOpts('words', gmCfg.deck, gmKid()) + '</select></label>'
         + '<label class="gmfld"><span>Round length</span><select id="gmround">' + [60, 90, 120, 180].map(function (s) { return '<option value="' + s + '"' + (s === gmCfg.roundS ? ' selected' : '') + '>' + (s < 120 ? s + 's' : (s / 60) + ' min') + '</option>'; }).join('') + '</select></label></div>';
       h += gmPlayersHtml();
@@ -2212,7 +2242,7 @@
 
     gmBindPlayers();
     $$('#ptGames [data-gmv]').forEach(function (c) { c.onclick = function () { gmCfg.variant = c.dataset.gmv; renderGames(); }; });
-    $$('#ptGames [data-gmtv]').forEach(function (c) { c.onclick = function () { gmCfg.guesserTv = gmCfg.variant === 'classic' ? c.dataset.gmtv : (c.dataset.gmtv === 'L2' ? 'L2' : 'R2'); if (gmCfg.variant !== 'classic') gmCfg.guesserTv = c.dataset.gmtv; renderGames(); }; });
+    $$('#ptGames [data-gmtv]').forEach(function (c) { c.onclick = function () { gmCfg.guesserTv = c.dataset.gmtv; renderGames(); }; });   /* Phase 2c: only centers-role TVs carry data-gmtv, so the tapped id is always valid */
     $$('#ptGames [data-gmww]').forEach(function (c) { c.onclick = function () { gmCfg.roles.wolves = +c.dataset.gmww; renderGames(); }; });
     $$('#ptGames [data-gmwr]').forEach(function (c) { c.onclick = function () { var k = c.dataset.gmwr; gmCfg.roles[k] = !gmCfg.roles[k]; renderGames(); }; });
     var dsel = $('#gmdeck'); if (dsel) dsel.onchange = function () { gmCfg.deck = dsel.value; };
@@ -2307,14 +2337,17 @@
     var q = pg.question, over = pg.phase === 'over';
     var wall = '';
     if (q && q.opts) {
-      var TVIX = { L1: 0, L3: 1, R1: 2, R3: 3 };
+      var TVIX = {};   /* Phase 2c: A–D live on the corners role (was the L1/L3/R1/R3 literal map) */
+      (layoutRoles().corners || []).forEach(function (f, i) { if (i < 4) TVIX[f] = i; });
       function ctv(id) {
         var ix = TVIX[id];
         if (ix == null) return '<div class="gmtv">' + id + '<span class="w">question</span></div>';
         var right = q.revealed && ix === q.correctIx, wrong = q.revealed && ix !== q.correctIx;
         return '<div class="gmtv' + (right ? ' word' : '') + '"' + (wrong ? ' style="opacity:.3"' : '') + '>' + id + '<span class="w">' + 'ABCD'.charAt(ix) + ' · ' + esc(q.opts[ix] || '') + '</span></div>';
       }
-      wall = '<div class="gmwall"><div class="grp">' + ctv('L1') + ctv('L2') + ctv('L3') + '</div><div class="grp">' + ctv('R1') + ctv('R2') + ctv('R3') + '</div></div>';
+      wall = '<div class="gmwall">' + Object.keys(layout.walls).map(function (wk) {
+        return '<div class="grp">' + (layout.walls[wk] || []).map(ctv).join('') + '</div>';
+      }).join('') + '</div>';
     }
     var h = '<div class="gmcon"><div class="card">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h2 style="margin:0">🧠 Quiz' + (q ? ' · Question ' + q.n + ' of ' + q.total : '') + '</h2><span class="hint">' + esc(pg.deckName || '') + '</span></div>'
@@ -2467,7 +2500,7 @@
       + '<div class="card"><div class="zt">2 · Which frame? <span class="hint">(pick the one behind your victim’s head)</span></div><div class="chips" id="cueframes">' + frames + '</div></div>'
       + '<div class="card"><button class="btn" id="cuego" style="width:100%">Start prompting</button></div></div>');
     $('#pclose2').onclick = closeSheet;
-    var selDeck = decks.length ? decks[0].id : null, selFrame = FRAME_IDS.indexOf('R2') >= 0 ? 'R2' : FRAME_IDS[0];   /* v2.64: default frame must exist in the layout */
+    var selDeck = decks.length ? decks[0].id : null, selFrame = layoutRoles().primary || (FRAME_IDS.indexOf('R2') >= 0 ? 'R2' : FRAME_IDS[0]);   /* v2.64: default frame must exist in the layout · Phase 2c: primary role */
     function paint() {
       $$('#sheet [data-cd]').forEach(function (c) { c.classList.toggle('on', c.dataset.cd === selDeck); });
       $$('#sheet [data-cf]').forEach(function (c) { c.classList.toggle('on', c.dataset.cf === selFrame); });
@@ -3126,14 +3159,14 @@
   /* v2.54: the off-branch is factored out so the Now bar's "· PREVIEW" tap target can share it */
   function endPreview() {
     previewOn = false; $('#pvw').classList.remove('on');
-    cancelPreviewPush(); post('/api/game/' + encodeURIComponent(prevGame || 'dining')); toast('Preview off — room restored');
+    cancelPreviewPush(); post('/api/game/' + encodeURIComponent(prevGame || atRestId())); toast('Preview off — room restored');   /* Phase 2c */
     updateDirtyUI();
   }
   $('#pvw').onclick = function () {
     if (previewOn) { endPreview(); return; }
     previewOn = true;
     $('#pvw').classList.add('on');
-    prevGame = (live.state && live.state.game !== '_draft') ? live.state.game : 'dining';
+    prevGame = (live.state && live.state.game !== '_draft') ? live.state.game : atRestId();   /* Phase 2c */
     pushDraft(); toast('● Draft is live on the TVs');
     updateDirtyUI();
   };
@@ -3825,8 +3858,14 @@
     var r = draft.rules || {};
     var games = window.__rulesGames;
     var sec = r.sections || {};
-    var SEC = [['setup', 'Setup', 'L1'], ['turn', 'How to play', 'L3'], ['win', 'Winning', 'R1'], ['tips', 'Tips', 'R3']];
-    var h = '<div class="zt">📖 Rules &amp; tutorial' + T('Point this mode at a game’s rules (from rules-data.json). The ticked panels show on the side TVs (L1 setup, L3 how-to, R1 winning, R3 tips); the tutorial video plays on the two centre TVs. Show on wall displays them now; the choice saves with the mode.') + '</div>';
+    /* Phase 2c: panel homes come from the layout — wall 1 carries setup (first
+       frame) + how-to (last frame), wall 2 carries winning + tips; single-wall
+       layouts fold everything onto the one wall. Same map as frame.html's
+       rules-overlay roleFor(). */
+    var wkeys = Object.keys(layout.walls);
+    var rw1 = layout.walls[wkeys[0]] || [], rw2 = (wkeys.length > 1 ? layout.walls[wkeys[1]] : layout.walls[wkeys[0]]) || [];
+    var SEC = [['setup', 'Setup', rw1[0]], ['turn', 'How to play', rw1[rw1.length - 1]], ['win', 'Winning', rw2[0]], ['tips', 'Tips', rw2[rw2.length - 1]]];
+    var h = '<div class="zt">📖 Rules &amp; tutorial' + T('Point this mode at a game’s rules (from rules-data.json). The ticked panels show as rules cards on the outer TVs (first and last of each wall); the tutorial video plays on the centre TVs. Show on wall displays them now; the choice saves with the mode.') + '</div>';
     if (!games) { h += '<div class="hint" id="rulesloading">Loading games…</div>'; return h; }
     var keys = Object.keys(games).sort(function (a, b) { return String((games[a] && games[a].name) || a).localeCompare(String((games[b] && games[b].name) || b)); });
     h += '<label class="fld"><span>Rules source (game)</span><select data-rules="game"><option value="">— none —</option>'
@@ -3835,7 +3874,7 @@
       var def = (games[r.game] && games[r.game].videoId) || '';
       h += '<label class="fld" style="margin-top:8px"><span>Tutorial video (YouTube link or ID)</span><input type="text" data-rules="videoId" placeholder="' + esc(def || 'youtu.be/…') + '" value="' + esc(r.videoId || '') + '"></label>';
       h += '<div class="fld" style="margin-top:8px"><span>Show which panels</span><div class="row" style="gap:5px;flex-wrap:wrap">'
-        + SEC.map(function (s) { var on = sec[s[0]] !== false; return '<button class="btn sm' + (on ? '' : ' gh') + '" data-rulesec="' + s[0] + '">' + s[1] + ' · ' + s[2] + '</button>'; }).join('') + '</div></div>';
+        + SEC.map(function (s) { var on = sec[s[0]] !== false; return '<button class="btn sm' + (on ? '' : ' gh') + '" data-rulesec="' + s[0] + '">' + s[1] + (s[2] ? ' · ' + s[2] : '') + '</button>'; }).join('') + '</div></div>';   /* Phase 2c: frame id from the layout (may be absent on tiny layouts) */
       h += '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn sm" id="rulesshow">▶ Show on wall</button><button class="btn sm gh" id="ruleshide">Hide</button></div>';
     } else {
       h += '<div class="hint" style="margin-top:6px">Pick a game to set its video and panels. Leave as “none” for modes without rules.</div>';
@@ -4954,13 +4993,22 @@
    but on Samsung Frame TVs turn_off is OFF-ONLY and turn_on is a no-op —
    only media_player.toggle actually flips power. Shim window.fetch so any
    /api/ha/service media_player turn_off/turn_on aimed at the room's TVs is
-   rewritten to media_player.toggle. NOTE (community release): this Samsung
-   Frame quirk shim is keyed to entity ids containing 'dining' (the reference
-   install's naming); making the match configurable is tracked in ROADMAP
-   Phase 2. Everything else is untouched.                                    */
+   rewritten to media_player.toggle. Phase 2c: the quirk is CONFIGURABLE —
+   settings.ha.tvQuirks maps entity ids to quirk names ({"media_player.x":
+   "samsung-frame"}, set in profiles.json or CONFIG.ha.tvQuirks; the core app
+   exposes the loaded settings as window.__rsSettings). The legacy match
+   (entity id contains 'dining', the reference install's naming) is kept as a
+   fallback so the reference install works with no config. Everything else is
+   untouched.                                                                */
 ;(function(){
   try{
     if (window.__rsTvFetchShim) return; window.__rsTvFetchShim = 1;
+    function quirks(){ var s = window.__rsSettings; return (s && s.ha && s.ha.tvQuirks) || {}; }
+    function isFrameTv(x){
+      if (typeof x !== 'string') return false;
+      if (quirks()[x] === 'samsung-frame') return true;      // Phase 2c: configured quirk map
+      return x.indexOf('dining') !== -1;                     // legacy fallback (reference install naming)
+    }
     var _fetch = window.fetch.bind(window);
     window.fetch = function(input, init){
       try{
@@ -4969,14 +5017,14 @@
           var b = JSON.parse(init.body);
           if (b && b.domain === 'media_player' && (b.service === 'turn_off' || b.service === 'turn_on') && b.data && b.data.entity_id){
             var ids = [].concat(b.data.entity_id);
-            var allTv = ids.length && ids.every(function(x){ return typeof x === 'string' && x.indexOf('dining') !== -1; });
+            var allTv = ids.length && ids.every(isFrameTv);
             if (allTv){ b.service = 'toggle'; init = Object.assign({}, init, { body: JSON.stringify(b) }); }
           }
         }
       }catch(e){}
       return _fetch(input, init);
     };
-    console.log('[rs] TV wake fetch-shim active (dining media_player turn_off/on -> toggle)');
+    console.log('[rs] TV wake fetch-shim active (samsung-frame tvQuirks / legacy dining match -> toggle)');
   }catch(e){}
 })();
 
@@ -5594,6 +5642,9 @@
   var GOLD = 'var(--gold)', GOLD2 = '#ffe6a8';   /* v2.44 (QW15): app palette, was #c9a24a */
   var games = {}, byName = {}, loaded = false;
   var liveState = { show: false, game: null };
+  /* Phase 2c: the tutorial-video TVs are the layout's centers role (L2/R2 on the
+     reference wall); the sound picker builds its segments from them. */
+  function rsCenters(){ var L = window.__rsLayout, c = L && L.roles && L.roles.centers; return (c && c.length) ? c : ['L2', 'R2']; }
 
   function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
   function getJSON(u) { return fetch(u).then(function (r) { return r.json(); }); }
@@ -5609,7 +5660,7 @@
     }).catch(function () { loaded = true; return games; });
   }
   function refreshState() {
-    return getJSON('/api/rules/state').then(function (s) { if (s && s.ok !== false) liveState = { show: !!s.show, game: s.game || null, sound: s.sound || { on: false, frame: 'L2' } }; return liveState; }).catch(function () { return liveState; });
+    return getJSON('/api/rules/state').then(function (s) { if (s && s.ok !== false) liveState = { show: !!s.show, game: s.game || null, sound: s.sound || { on: false, frame: rsCenters()[0] } }; return liveState; }).catch(function () { return liveState; });   /* Phase 2c */
   }
   function liveModeName() {
     var nm = document.getElementById('nowname');
@@ -5657,9 +5708,9 @@
         + '</div></div>';
 
       if (showingThis && rec.videoId) {
-        var snd = liveState.sound || { on: false, frame: 'L2' };
-        var cur = snd.on ? (snd.frame || 'L2') : 'off';
-        var segs = [['off', '🔇 Off'], ['L2', 'L2'], ['R2', 'R2'], ['both', 'Both']];
+        var snd = liveState.sound || { on: false, frame: rsCenters()[0] };
+        var cur = snd.on ? (snd.frame || rsCenters()[0]) : 'off';
+        var segs = [['off', '🔇 Off']].concat(rsCenters().map(function (f) { return [f, f]; })).concat([['both', 'Both']]);   /* Phase 2c: centers role, labels = real ids */
         html += '<div style="display:flex;gap:7px;align-items:center;margin-bottom:12px">'
           + '<span style="font-size:12.5px;opacity:.75">🔊 Tutorial sound</span>'
           + segs.map(function (s2) {
@@ -5786,10 +5837,11 @@
       loaded=true; paintPills(); apply();
     });
   }
+  function rsAtRest(){ return (window.__rsLayout && window.__rsLayout.atRest) || 'dining'; }   /* Phase 2c */
   function roomOf(id){
     var p=profiles[id]||{};
     var r=p.room==null?'':String(p.room);
-    if(!r||r==='dining') return 'main';               // untagged + dining = the main wall
+    if(!r||r===rsAtRest()) return 'main';             // untagged + at-rest-tagged = the main wall (Phase 2c: was 'dining')
     return r;
   }
   function matches(id){ return roomOf(id)===sel; }
@@ -5804,7 +5856,7 @@
     var bar=document.getElementById('rs-room-pills'); if(!bar) return;
     bar.innerHTML='';
     var list=[{id:'main', name:'This room', icon:'🖼'}];
-    rooms.forEach(function(r){ if(r&&r.id&&r.id!=='dining') list.push({id:r.id, name:r.name||r.id, icon:r.icon||'🏠'}); });
+    rooms.forEach(function(r){ if(r&&r.id&&r.id!==rsAtRest()) list.push({id:r.id, name:r.name||r.id, icon:r.icon||'🏠'}); });   /* Phase 2c: the at-rest-id room IS the main wall pill */
     list.forEach(function(r){
       var b=document.createElement('span'); b.style.cssText=pillCss(sel===r.id);
       b.textContent=r.icon+' '+r.name;
