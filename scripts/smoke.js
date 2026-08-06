@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.0 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.1 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
    Usage: node scripts/smoke.js                                                */
 'use strict';
@@ -18,6 +18,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
     PORT: String(PORT),
     APP_DIR: ROOT,
     STATE_FILE: path.join(tmp, 'state.json'),
+    MEDIA_DIR: path.join(tmp, 'media'),          // v1.1: upload check writes here, not the repo
     HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
   }),
   stdio: ['ignore', 'pipe', 'pipe']
@@ -26,6 +27,18 @@ let bootLog = '';
 child.stdout.on('data', d => bootLog += d);
 child.stderr.on('data', d => bootLog += d);
 
+function post(p, obj) {
+  return new Promise((res, rej) => {
+    const body = JSON.stringify(obj);
+    const rq = http.request({ host: '127.0.0.1', port: PORT, path: p, method: 'POST', timeout: 4000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, r => {
+      let s = ''; r.on('data', c => s += c);
+      r.on('end', () => res({ code: r.statusCode, body: s }));
+    });
+    rq.on('error', rej).on('timeout', function () { rq.destroy(new Error('timeout')); });
+    rq.end(body);
+  });
+}
 function get(p) {
   return new Promise((res, rej) => {
     http.get({ host: '127.0.0.1', port: PORT, path: p, timeout: 4000 }, r => {
@@ -73,6 +86,24 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
 
     const frame = await get('/frame.html?frame=L1');
     check('frame page serves', frame.code === 200, 'code ' + frame.code);
+
+    // v1.1 (Phase 2b): router-ported routes + revived POST /api/upload
+    const PNG1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==';
+    const up = await post('/api/upload', { name: 'smoke-upload.png', b64: PNG1x1 });
+    let uj = null; try { uj = JSON.parse(up.body); } catch (e) {}
+    const upFile = path.join(tmp, 'media', 'smoke-upload.png');
+    check('POST /api/upload saves into media dir', up.code === 200 && !!(uj && uj.ok) && fs.existsSync(upFile),
+      'code ' + up.code + ' body ' + up.body.slice(0, 200));
+    try { fs.unlinkSync(upFile); } catch (e) {}
+    const upBad = await post('/api/upload', { name: '../evil.png', b64: PNG1x1 });
+    check('POST /api/upload rejects path traversal', upBad.code === 400, 'code ' + upBad.code);
+
+    for (const [pth, key] of [['/api/mediafx', 'imgAdjust'], ['/api/modeposters', 'posters'],
+                              ['/api/social-config', 'effects'], ['/api/viz', 'modes']]) {
+      const r = await get(pth);
+      let j = null; try { j = JSON.parse(r.body); } catch (e) {}
+      check('GET ' + pth + ' ok:true (router)', r.code === 200 && !!(j && j.ok && (key in j)), 'code ' + r.code + ' ' + r.body.slice(0, 120));
+    }
   }
   child.kill();
   const fails = checks.filter(c => !c.ok).length;

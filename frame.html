@@ -24,14 +24,42 @@
 <body>
 <div id="frame" class="ie-frame"></div>
 <script src="engine.js"></script>
-<script src="fx.js"></script>
-<script src="fx-audio.js"></script>
 <script>
+  /* ---- layout bootstrap (Phase 2a) ----
+     Adopt the conductor's GET /api/layout BEFORE fx.js parses: its appended
+     modules (music viz, playlist, variant stagger) read IE.FRAME_IDS and the
+     wall helpers at parse time, so a custom layout (e.g. one wall of four)
+     must already be in place. On file:// or fetch failure we keep the default
+     two-walls-of-three and boot anyway (2s cap so a slow server never blanks
+     the TV for long). */
   (function () {
-    // ---- which frame am I? ----  ?frame=L1 .. R3   (also accepts ?id=)
+    function loadScript(src) {
+      return new Promise(function (res) {
+        var s = document.createElement('script');
+        s.src = src; s.onload = res; s.onerror = res;
+        document.body.appendChild(s);
+      });
+    }
+    var lay = (location.protocol === 'file:')
+      ? Promise.resolve(null)
+      : Promise.race([
+          fetch('api/layout').then(function (r) { return r.json(); }).catch(function () { return null; }),
+          new Promise(function (res) { setTimeout(function () { res(null); }, 2000); })
+        ]);
+    window.__rsFrameBoot = lay.then(function (lj) {
+      if (lj && Array.isArray(lj.frames) && lj.frames.length) {
+        try { IE.setLayout(lj); window.__rsLayout = lj; } catch (e) {}
+      }
+      return loadScript('fx.js').then(function () { return loadScript('fx-audio.js'); });
+    });
+  })();
+</script>
+<script>
+  window.__rsFrameBoot.then(function () {
+    // ---- which frame am I? ----  ?frame=<id>   (also accepts ?id=)
     var qs = new URLSearchParams(location.search);
-    var frameId = (qs.get('frame') || qs.get('id') || 'L1').toUpperCase();
-    if (IE.FRAME_IDS.indexOf(frameId) < 0) frameId = 'L1';
+    var frameId = (qs.get('frame') || qs.get('id') || 'L1').trim().toUpperCase();   // Phase 2a: accept the given id verbatim
+    var knownId = IE.FRAME_IDS.indexOf(frameId) >= 0;   // unknown ids keep running, badge warns below
     var wsParam = qs.get('ws');                       // optional real Conductor
     var wsUrl = wsParam === 'auto'
       ? ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host)
@@ -57,6 +85,12 @@
       if (IE.audio) IE.audio.apply(s);                // ambient bed follows the current mode
       musicToast(s);                                  // v1.1: 10s song toast when the MA track changes
       var idEl = el.querySelector('[data-ieid]');
+      if (idEl && !knownId) {                         // Phase 2a: id not in the layout — warn but keep running
+        idEl.textContent = frameId + ' — not in layout';
+        idEl.style.background = 'rgba(140,30,30,.75)'; idEl.style.color = '#ffd9d4';
+        idEl.style.display = 'block'; idEl.style.opacity = '1';
+        return;
+      }
       if (idEl && showLabel) { setTimeout(function () { idEl.style.opacity = '0'; }, 4000); }
       else if (idEl) idEl.style.display = 'none';
     }
@@ -86,7 +120,7 @@
       var idEl = el.querySelector('[data-ieid]');
       if (idEl) { idEl.style.display = 'block'; idEl.style.opacity = '1'; setTimeout(function(){ idEl.style.opacity='0'; }, 2500); }
     });
-  })();
+  });
 </script>
 
 <script>

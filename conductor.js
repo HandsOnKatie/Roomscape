@@ -1401,171 +1401,19 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
    script/cover, state.rooms init) are repeated in 2.4. Originals in git
    history before this commit. */
 
-/* ==== ASSET UPLOAD (appended 2026-07-11, rooms-compatible) =================
-   POST /api/upload {name, b64} -> saves inside MEDIA_DIR (whitelisted
-   extensions, one optional subfolder), then rescans media.
-   PATTERN: prependListener + res-neuter, same convention as the ROOMS
-   phase patches. LISTENER ORDER after this patch:
-   [upload, 2.2-music, 2.1-rooms, main]  <-- phase-3 authors take note:
-   ls[0] is NO LONGER the 2.2 music listener! Match by behaviour, not index. */
-(function () {
-  server.prependListener('request', function (req, res) {
-    let u2 = null; try { u2 = new URL(req.url, 'http://x'); } catch (e) {}
-    if (!(u2 && u2.pathname === '/api/upload' && req.method === 'POST')) return;   // untouched fall-through
-    const realWriteHead = res.writeHead.bind(res), realEnd = res.end.bind(res);
-    res.writeHead = function () { return res; };
-    res.write = function () { return true; };
-    res.end = function () {};
-    res.setHeader = function () {};
-    function send(code, obj) {
-      try { realWriteHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); realEnd(JSON.stringify(obj)); } catch (e) {}
-    }
-    readBody(req, function (b) {
-      if (!b || !b.name || !b.b64) return send(400, { ok: false, error: 'need {name, b64}' });
-      const name = String(b.name).replace(/\\/g, '/');
-      if (name.indexOf('..') >= 0 || !/^[\w\- ]+(\/[\w\- .()]+)?\.(jpe?g|png|webp|gif|mp4|txt|json|pdf|md)$/i.test(name)) {
-        return send(400, { ok: false, error: 'bad name' });
-      }
-      const abs = mediaSafe(name);
-      if (!abs) return send(400, { ok: false, error: 'outside media dir' });
-      try {
-        fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, Buffer.from(b.b64, 'base64'));
-        // v2.62: the deep rescan runs async so the upload response (and any live
-        // video streams) never wait on a full recursive share walk.
-        if (typeof global.__rsRescanAsync === 'function') global.__rsRescanAsync(); else scanMedia();
-        return send(200, { ok: true, saved: name, bytes: fs.statSync(abs).size });
-      } catch (e) { return send(500, { ok: false, error: String(e).slice(0, 120) }); }
-    });
-  });
-})();
-/* ==== end ASSET UPLOAD ==================================================== */
-
-/* ==== RULES & SCORES (appended 2026-07-11, rooms-compatible) ===============
-   Adds, via ONE prepended listener (house prepend+neuter pattern):
-   - GET/POST /api/scores            scores.json {players:[],results:[]} in APP_DIR
-   - POST /api/scores/result         append one result {game,players:[{name,won,score?}],notes?}
-   - GET  /api/rules[?game=key]      rules-data.json (APP_DIR)
-   - GET  /api/rules/state           {show,game,videoId,name,ts}
-   - POST /api/rules/show            {game} to show on wall, {off:true} to hide
-   - POST /api/upload-app            {name,b64,append?} whitelist write into APP_DIR (backs up)
-   - GET  /scores, /rs-extras.js     served no-store from APP_DIR
-   - GET  / and /app.html            served with <script src="/rs-extras.js"> injected
-   LISTENER ORDER now: [rules-scores, upload, 2.2-music, 2.1-rooms, main].
-   Phase-3 rooms work: match listeners by behaviour, not index. */
-(function () {
-  const SCORES_FILE = path.join(APP_DIR, 'scores.json');
-  const RULES_FILE = path.join(APP_DIR, 'rules-data.json');
-  const APP_WHITELIST = /^(frame\.html|rs-extras\.js|scores\.html|rules-data\.json)$/;
-  let rulesState = { show: false, game: null, videoId: null, name: null, ts: 0 };
-  function readScores() {
-    try { return JSON.parse(fs.readFileSync(SCORES_FILE, 'utf8')); }
-    catch (e) { return { players: [], results: [] }; }
-  }
-  function writeScores(d) { fs.writeFileSync(SCORES_FILE, JSON.stringify(d, null, 2)); }
-  function readRules() {
-    try { return JSON.parse(fs.readFileSync(RULES_FILE, 'utf8')); } catch (e) { return { games: {} }; }
-  }
-  server.prependListener('request', function (req, res) {
-    let u2 = null; try { u2 = new URL(req.url, 'http://x'); } catch (e) { return; }
-    const p2 = u2 ? u2.pathname : '';
-    const mine = (p2 === '/api/scores' || p2 === '/api/scores/result' || p2 === '/api/rules' ||
-                  p2 === '/api/rules/state' || p2 === '/api/rules/show' || p2 === '/api/upload-app' ||
-                  p2 === '/scores' || p2 === '/scores.html' || p2 === '/rs-extras.js' ||
-                  ((p2 === '/' || p2 === '/app.html') && req.method === 'GET'));
-    if (!mine) return;
-    const realWriteHead = res.writeHead.bind(res), realEnd = res.end.bind(res);
-    res.writeHead = function () { return res; }; res.write = function () { return true; };
-    res.end = function () {}; res.setHeader = function () {};
-    function send(code, obj, type, noStore) {
-      try {
-        const hdr = { 'Content-Type': type || 'application/json', 'Access-Control-Allow-Origin': '*' };
-        if (noStore) hdr['Cache-Control'] = 'no-store';
-        realWriteHead(code, hdr);
-        realEnd(typeof obj === 'string' || Buffer.isBuffer(obj) ? obj : JSON.stringify(obj));
-      } catch (e) {}
-    }
-    /* ---- app.html with rs-extras injection (also '/') ---- */
-    if (p2 === '/' || p2 === '/app.html') {
-      try {
-        let html = fs.readFileSync(path.join(APP_DIR, 'app.html'), 'utf8');
-        if (html.indexOf('rs-extras.js') < 0) html = html.replace(/<\/body>/i, '<script src="/rs-extras.js"></script></body>');
-        return send(200, html, 'text/html; charset=utf-8', true);
-      } catch (e) { return send(500, { ok: false, error: 'app.html: ' + e.message }); }
-    }
-    if (p2 === '/scores' || p2 === '/scores.html') {
-      try { return send(200, fs.readFileSync(path.join(APP_DIR, 'scores.html')), 'text/html; charset=utf-8', true); }
-      catch (e) { return send(404, { ok: false, error: 'scores.html not uploaded yet' }); }
-    }
-    if (p2 === '/rs-extras.js') {
-      try { return send(200, fs.readFileSync(path.join(APP_DIR, 'rs-extras.js')), 'application/javascript; charset=utf-8', true); }
-      catch (e) { return send(404, 'console.warn("rs-extras.js not uploaded yet");', 'application/javascript', true); }
-    }
-    /* ---- rules ---- */
-    if (p2 === '/api/rules' && req.method === 'GET') {
-      const d = readRules(); const g = u2.searchParams.get('game');
-      if (g) return send(200, { ok: true, game: g, rules: (d.games && d.games[g]) || null });
-      return send(200, { ok: true, count: Object.keys(d.games || {}).length, games: d.games || {} });
-    }
-    if (p2 === '/api/rules/state') return send(200, rulesState);
-    if (p2 === '/api/rules/show' && req.method === 'POST') {
-      return readBody(req, function (b) {
-        if (b && b.off) { rulesState = { show: false, game: null, videoId: null, name: null, ts: Date.now() };
-          try { logDiary('rules', 'rules hidden from the wall'); } catch (e) {}
-          return send(200, rulesState); }
-        if (!b || !b.game) return send(400, { ok: false, error: 'need {game} or {off:true}' });
-        const d = readRules(); const entry = (d.games && d.games[b.game]) || {};
-        rulesState = { show: true, game: b.game, videoId: entry.videoId || null, name: entry.name || b.game, ts: Date.now() };
-        try { logDiary('rules', '📖 rules on the wall: ' + (entry.name || b.game)); } catch (e) {}
-        return send(200, rulesState);
-      });
-    }
-    /* ---- scores ---- */
-    if (p2 === '/api/scores' && req.method === 'GET') return send(200, readScores());
-    if (p2 === '/api/scores' && req.method === 'POST') {
-      return readBody(req, function (b) {
-        if (!b || !Array.isArray(b.players) || !Array.isArray(b.results)) return send(400, { ok: false, error: 'need {players:[],results:[]}' });
-        try { writeScores({ players: b.players, results: b.results }); return send(200, { ok: true, players: b.players.length, results: b.results.length }); }
-        catch (e) { return send(500, { ok: false, error: String(e).slice(0, 120) }); }
-      });
-    }
-    if (p2 === '/api/scores/result' && req.method === 'POST') {
-      return readBody(req, function (b) {
-        if (!b || !b.game || !Array.isArray(b.players) || !b.players.length) return send(400, { ok: false, error: 'need {game, players:[{name,won}]}' });
-        try {
-          const d = readScores();
-          const rec = { id: 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36),
-            game: String(b.game), name: b.name || String(b.game), dateISO: b.dateISO || new Date().toISOString(),
-            players: b.players.map(function (x) { const o = { name: String(x.name), won: !!x.won }; if (x.score != null && x.score !== '') o.score = Number(x.score); return o; }) };
-          if (b.notes) rec.notes = String(b.notes).slice(0, 400);
-          rec.players.forEach(function (x) { if (!d.players.some(function (pl) { return pl.name === x.name; })) d.players.push({ name: x.name }); });
-          d.results.push(rec); writeScores(d);
-          try { logDiary('scores', '🏆 ' + rec.players.filter(function (x) { return x.won; }).map(function (x) { return x.name; }).join(' & ') + ' won ' + rec.name); } catch (e) {}
-          return send(200, { ok: true, id: rec.id, results: d.results.length });
-        } catch (e) { return send(500, { ok: false, error: String(e).slice(0, 120) }); }
-      });
-    }
-    /* ---- app-file upload (whitelisted, backs up) ---- */
-    if (p2 === '/api/upload-app' && req.method === 'POST') {
-      return readBody(req, function (b) {
-        if (!b || !b.name || !b.b64) return send(400, { ok: false, error: 'need {name, b64}' });
-        if (!APP_WHITELIST.test(String(b.name))) return send(400, { ok: false, error: 'name not whitelisted' });
-        const abs = path.join(APP_DIR, String(b.name));
-        try {
-          if (!b.append && fs.existsSync(abs)) {
-            try { fs.mkdirSync(path.join(APP_DIR, '_backups'), { recursive: true });
-              fs.copyFileSync(abs, path.join(APP_DIR, '_backups', b.name + '.' + Date.now() + '.bak')); } catch (e) {}
-          }
-          const buf = Buffer.from(b.b64, 'base64');
-          if (b.append) fs.appendFileSync(abs, buf); else fs.writeFileSync(abs, buf);
-          return send(200, { ok: true, saved: b.name, bytes: fs.statSync(abs).size, append: !!b.append });
-        } catch (e) { return send(500, { ok: false, error: String(e).slice(0, 120) }); }
-      });
-    }
-    return send(404, { ok: false, error: 'unhandled rs path' });
-  });
-})();
-/* ==== end RULES & SCORES ================================================== */
+/* ==== ASSET UPLOAD + RULES & SCORES (removed 2026-08-06, Phase 2b) ========
+   Both blocks were dead at runtime: their prepended listeners registered
+   BEFORE the ROOMS 2.4 consolidation below, whose while-loop strips every
+   'request' listener above the main handler at boot. All helpers were
+   IIFE-scoped; nothing later referenced them.
+   - ASSET UPLOAD (POST /api/upload {name,b64}) is re-implemented via the
+     RS-ROUTE-DISPATCH router — see the ASSET UPLOAD (router) block after
+     the dispatcher.
+   - RULES & SCORES was superseded by the RULES REVIVE block (rules) and
+     the router-based SCORES & PEOPLE block (scores/people); its
+     /api/upload-app + rs-extras.js injection had been dead in production
+     since 2026-07-11 and are not revived.
+   Originals in git history before this commit. */
 
 /* ================= ROOMSCAPE ROOMS PHASE 2.4 — QA FIXES (2026-07-11) =======
    Fixes from the full QA pass:
@@ -2015,114 +1863,11 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
   }catch(e){ console.error('[deepscan] patch failed:', e && e.message); }
 })();
 
-/* ================= ROOMSCAPE MEDIA FX STORE (2026-07-14) =================
-   Two per-media-item settings maps, saved next to conductor.js and served to
-   the app + kiosks (fx.js polls this; the app reads it live).
-     imgAdjust : { "<image-url-path>": {bri,con,sat,hue,warm,exp,gam,vig,blur,sharp} }
-                 per scene/overlay IMAGE colour grade, applied everywhere.
-     overlayFx : { "<effect-file>": {opacity,fadeIn,fadeOut} }
-                 per animated-effect CLIP opacity + fade envelope, everywhere.
-     GET  /api/mediafx                          -> { ok, imgAdjust, overlayFx }
-     POST /api/mediafx {imgAdjust?, overlayFx?}  -> merge (value null removes)
-   Self-contained: own file store, own request listener for its one path. */
-;(function(){
-  try{
-    var fs = require('fs'), path = require('path');
-    var FILE = path.join(__dirname, 'mediafx.json');
-    var DB = { imgAdjust:{}, overlayFx:{} };
-    try{ if (fs.existsSync(FILE)){ var j = JSON.parse(fs.readFileSync(FILE,'utf8'))||{}; DB.imgAdjust=j.imgAdjust||{}; DB.overlayFx=j.overlayFx||{}; } }
-    catch(e){ console.error('[mediafx] read failed:', e && e.message); }
-    var wt=null;
-    function persistFx(){ clearTimeout(wt); wt=setTimeout(function(){ try{ fs.writeFileSync(FILE, JSON.stringify(DB), 'utf8'); }catch(e){ console.error('[mediafx] write failed:', e && e.message); } }, 150); }
-    function log(m){ try{ console.log('[mediafx] '+m); }catch(e){} }
-    function readBody(req, cb){ var b='',big=false; req.on('data',function(c){ b+=c; if(b.length>4*1024*1024){big=true;req.destroy();} }); req.on('end',function(){ if(big)return cb('too large'); try{ cb(null, b?JSON.parse(b):{}); }catch(e){ cb('bad json'); } }); req.on('error',function(e){ cb(String(e&&e.message||e)); }); }
-    function mergeMap(dst, src){ var n=0; if(src && typeof src==='object'){ Object.keys(src).forEach(function(k){ var v=src[k]; if(v==null){ if(k in dst){ delete dst[k]; n++; } } else if(typeof v==='object'){ dst[k]=v; n++; } }); } return n; }
+/* MEDIA FX STORE — ported to the RS-ROUTE-DISPATCH router (Phase 2b,
+   2026-08-06); the block now lives after the ASSET UPLOAD (router) block. */
 
-    server.prependListener('request', function(req, res){
-      var p; try{ p = new URL(req.url,'http://localhost').pathname; }catch(e){ return; }
-      if (p !== '/api/mediafx') return;
-      var W=res.writeHead.bind(res), E=res.end.bind(res);
-      res.writeHead=res.setHeader=function(){ return res; }; res.write=res.end=function(){ return true; };
-      function out(code,obj){ try{ W(code,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Cache-Control':'no-store'}); E(JSON.stringify(obj)); }catch(e){} }
-      try{
-        if (req.method==='GET') return out(200, { ok:true, imgAdjust:DB.imgAdjust, overlayFx:DB.overlayFx });
-        if (req.method!=='POST') return out(405, { ok:false, error:'GET or POST only' });
-        return readBody(req, function(err, body){
-          if (err) return out(400, { ok:false, error:err });
-          var n = mergeMap(DB.imgAdjust, body && body.imgAdjust) + mergeMap(DB.overlayFx, body && body.overlayFx);
-          if (n) persistFx();
-          out(200, { ok:true, saved:n });
-        });
-      }catch(e){ return out(500, { ok:false, error:String(e&&e.message||e) }); }
-    });
-    log('active: '+Object.keys(DB.imgAdjust).length+' image grades, '+Object.keys(DB.overlayFx).length+' effect envelopes ('+FILE+')');
-  }catch(e){ console.error('[mediafx] patch failed to initialise:', e && e.message); }
-})();
-
-/* ================= ROOMSCAPE MODE POSTERS (2026-07-14) =================
-   Auto-generated mode card thumbnails (a composite of each mode's left three
-   frames, rendered in the browser and posted here). Stored as a small JSON
-   map { modeId: dataURL } next to conductor.js, served back to the app so the
-   Play/Design mode tiles show a real preview instead of a shared placeholder.
-     GET  /api/modeposters            -> { ok, posters:{id:dataURL} }
-     POST /api/modeposters {id,data}  -> merge+persist one; data:'' removes it
-     POST /api/modeposters {bulk:{..}}-> merge many at once
-   Self-contained: own file store, own request listener for its two paths only.
-   Nothing else in the Conductor is touched (kiosks never receive these). */
-;(function(){
-  try{
-    var fs = require('fs'), path = require('path');
-    var FILE = path.join(__dirname, 'modeposters.json');
-    var POSTERS = {};
-    try{ if (fs.existsSync(FILE)) POSTERS = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {}; }
-    catch(e){ console.error('[posters] read failed:', e && e.message); POSTERS = {}; }
-    var writeTimer = null;
-    function persistPosters(){
-      clearTimeout(writeTimer);
-      writeTimer = setTimeout(function(){
-        try{ fs.writeFileSync(FILE, JSON.stringify(POSTERS), 'utf8'); }
-        catch(e){ console.error('[posters] write failed:', e && e.message); }
-      }, 150);
-    }
-    function log(m){ try{ console.log('[posters] ' + m); }catch(e){} }
-
-    function readBody(req, cb){
-      var b = ''; var big = false;
-      req.on('data', function(c){ b += c; if (b.length > 24 * 1024 * 1024){ big = true; req.destroy(); } });
-      req.on('end', function(){ if (big) return cb('too large'); try{ cb(null, b ? JSON.parse(b) : {}); }catch(e){ cb('bad json'); } });
-      req.on('error', function(e){ cb(String(e && e.message || e)); });
-    }
-
-    server.prependListener('request', function(req, res){
-      var p; try{ p = new URL(req.url, 'http://localhost').pathname; }catch(e){ return; }
-      if (p !== '/api/modeposters') return;
-      var W = res.writeHead.bind(res), E = res.end.bind(res);
-      res.writeHead = res.setHeader = function(){ return res; };
-      res.write = res.end = function(){ return true; };
-      function out(code, obj){
-        try{ W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); }catch(e){}
-      }
-      try{
-        if (req.method === 'GET') return out(200, { ok: true, posters: POSTERS });
-        if (req.method !== 'POST') return out(405, { ok: false, error: 'GET or POST only' });
-        return readBody(req, function(err, body){
-          if (err) return out(400, { ok: false, error: err });
-          var n = 0;
-          function set(id, data){
-            id = String(id || '').trim(); if (!id) return;
-            if (data === '' || data == null){ delete POSTERS[id]; n++; }
-            else if (typeof data === 'string' && data.indexOf('data:image/') === 0){ POSTERS[id] = data; n++; }
-          }
-          if (body && body.bulk && typeof body.bulk === 'object'){ Object.keys(body.bulk).forEach(function(id){ set(id, body.bulk[id]); }); }
-          else { set(body && body.id, body && body.data); }
-          if (n) persistPosters();
-          out(200, { ok: true, saved: n, count: Object.keys(POSTERS).length });
-        });
-      }catch(e){ return out(500, { ok: false, error: String(e && e.message || e) }); }
-    });
-    log('active: ' + Object.keys(POSTERS).length + ' stored (' + FILE + ')');
-  }catch(e){ console.error('[posters] patch failed to initialise:', e && e.message); }
-})();
+/* MODE POSTERS — ported to the RS-ROUTE-DISPATCH router (Phase 2b,
+   2026-08-06); the block now lives after the MEDIA FX STORE block. */
 /* ================= ROOMSCAPE RULES REVIVE (2026-07-15) =================
    RS-RULES-REVIVE
    The original "Rules & Scores" module (appended 2026-07-11) stopped serving:
@@ -2335,6 +2080,148 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     });
     console.log('[dispatch] route table active: ' + routes.length + ' route(s); modules loaded:[' + loaded.join(',') + '] failed:[' + failed.join(',') + ']');
   } catch (e) { try { console.error('[dispatch] init failed:', e && e.message); } catch (_) {} }
+})();
+
+
+/* ================= ROOMSCAPE ASSET UPLOAD (router, 2026-08-06) =================
+   RS-UPLOAD v2 — revives POST /api/upload {name, b64} through the
+   RS-ROUTE-DISPATCH router. The 2026-07-11 prepend-listener original was dead
+   at runtime (nuked by the ROOMS 2.4 listener consolidation); logic is kept
+   verbatim from it:
+     POST /api/upload {name, b64} -> saves inside MEDIA_DIR (whitelisted
+     extensions, one optional subfolder, '..' rejected, mediaSafe containment),
+     then triggers the async deep rescan. Body is JSON via the shared readBody
+     (2MB cap). Replies 200 {ok,saved,bytes} | 400/500 {ok:false,error}. */
+;(function () {
+  try {
+    var R = global.__rsRouter; if (!R) { console.log('[upload] router missing — skipped'); return; }
+    R.add('POST', '/api/upload', function (req, res, u, real) {
+      function send(code, obj) { real.json(code, obj); }
+      readBody(req, function (b) {
+        if (!b || !b.name || !b.b64) return send(400, { ok: false, error: 'need {name, b64}' });
+        const name = String(b.name).replace(/\\/g, '/');
+        if (name.indexOf('..') >= 0 || !/^[\w\- ]+(\/[\w\- .()]+)?\.(jpe?g|png|webp|gif|mp4|txt|json|pdf|md)$/i.test(name)) {
+          return send(400, { ok: false, error: 'bad name' });
+        }
+        const abs = mediaSafe(name);
+        if (!abs) return send(400, { ok: false, error: 'outside media dir' });
+        try {
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          fs.writeFileSync(abs, Buffer.from(b.b64, 'base64'));
+          // deep rescan runs async so the upload response never waits on a full share walk
+          if (typeof global.__rsRescanAsync === 'function') global.__rsRescanAsync(); else scanMedia();
+          return send(200, { ok: true, saved: name, bytes: fs.statSync(abs).size });
+        } catch (e) { return send(500, { ok: false, error: String(e).slice(0, 120) }); }
+      });
+    });
+    console.log('[upload] POST /api/upload revived via route table');
+  } catch (e) { try { console.error('[upload] init failed:', e && e.message); } catch (_) {} }
+})();
+
+/* ================= ROOMSCAPE MEDIA FX STORE (2026-07-14) =================
+   Phase 2b (2026-08-06): registered through the RS-ROUTE-DISPATCH router
+   (was its own prepend listener + res-neuter); handler logic unchanged.
+   Relocated below the dispatcher so global.__rsRouter exists here.
+   Two per-media-item settings maps, saved next to conductor.js and served to
+   the app + kiosks (fx.js polls this; the app reads it live).
+     imgAdjust : { "<image-url-path>": {bri,con,sat,hue,warm,exp,gam,vig,blur,sharp} }
+                 per scene/overlay IMAGE colour grade, applied everywhere.
+     overlayFx : { "<effect-file>": {opacity,fadeIn,fadeOut} }
+                 per animated-effect CLIP opacity + fade envelope, everywhere.
+     GET  /api/mediafx                          -> { ok, imgAdjust, overlayFx }
+     POST /api/mediafx {imgAdjust?, overlayFx?}  -> merge (value null removes)
+   Self-contained: own file store, own request listener for its one path. */
+;(function(){
+  try{
+    var fs = require('fs'), path = require('path');
+    var FILE = path.join(__dirname, 'mediafx.json');
+    var DB = { imgAdjust:{}, overlayFx:{} };
+    try{ if (fs.existsSync(FILE)){ var j = JSON.parse(fs.readFileSync(FILE,'utf8'))||{}; DB.imgAdjust=j.imgAdjust||{}; DB.overlayFx=j.overlayFx||{}; } }
+    catch(e){ console.error('[mediafx] read failed:', e && e.message); }
+    var wt=null;
+    function persistFx(){ clearTimeout(wt); wt=setTimeout(function(){ try{ fs.writeFileSync(FILE, JSON.stringify(DB), 'utf8'); }catch(e){ console.error('[mediafx] write failed:', e && e.message); } }, 150); }
+    function log(m){ try{ console.log('[mediafx] '+m); }catch(e){} }
+    function readBody(req, cb){ var b='',big=false; req.on('data',function(c){ b+=c; if(b.length>4*1024*1024){big=true;req.destroy();} }); req.on('end',function(){ if(big)return cb('too large'); try{ cb(null, b?JSON.parse(b):{}); }catch(e){ cb('bad json'); } }); req.on('error',function(e){ cb(String(e&&e.message||e)); }); }
+    function mergeMap(dst, src){ var n=0; if(src && typeof src==='object'){ Object.keys(src).forEach(function(k){ var v=src[k]; if(v==null){ if(k in dst){ delete dst[k]; n++; } } else if(typeof v==='object'){ dst[k]=v; n++; } }); } return n; }
+
+    var R = global.__rsRouter; if (!R){ log('router missing — skipped'); return; }
+    R.add('ALL', '/api/mediafx', function(req, res, u, real){
+      function out(code,obj){ real.json(code, obj); }
+      try{
+        if (req.method==='GET') return out(200, { ok:true, imgAdjust:DB.imgAdjust, overlayFx:DB.overlayFx });
+        if (req.method!=='POST') return out(405, { ok:false, error:'GET or POST only' });
+        return readBody(req, function(err, body){
+          if (err) return out(400, { ok:false, error:err });
+          var n = mergeMap(DB.imgAdjust, body && body.imgAdjust) + mergeMap(DB.overlayFx, body && body.overlayFx);
+          if (n) persistFx();
+          out(200, { ok:true, saved:n });
+        });
+      }catch(e){ return out(500, { ok:false, error:String(e&&e.message||e) }); }
+    });
+    log('active via route table: '+Object.keys(DB.imgAdjust).length+' image grades, '+Object.keys(DB.overlayFx).length+' effect envelopes ('+FILE+')');
+  }catch(e){ console.error('[mediafx] patch failed to initialise:', e && e.message); }
+})();
+
+/* ================= ROOMSCAPE MODE POSTERS (2026-07-14) =================
+   Phase 2b (2026-08-06): registered through the RS-ROUTE-DISPATCH router
+   (was its own prepend listener + res-neuter); handler logic unchanged.
+   Relocated below the dispatcher so global.__rsRouter exists here.
+   Auto-generated mode card thumbnails (a composite of each mode's left three
+   frames, rendered in the browser and posted here). Stored as a small JSON
+   map { modeId: dataURL } next to conductor.js, served back to the app so the
+   Play/Design mode tiles show a real preview instead of a shared placeholder.
+     GET  /api/modeposters            -> { ok, posters:{id:dataURL} }
+     POST /api/modeposters {id,data}  -> merge+persist one; data:'' removes it
+     POST /api/modeposters {bulk:{..}}-> merge many at once
+   Self-contained: own file store, own request listener for its two paths only.
+   Nothing else in the Conductor is touched (kiosks never receive these). */
+;(function(){
+  try{
+    var fs = require('fs'), path = require('path');
+    var FILE = path.join(__dirname, 'modeposters.json');
+    var POSTERS = {};
+    try{ if (fs.existsSync(FILE)) POSTERS = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {}; }
+    catch(e){ console.error('[posters] read failed:', e && e.message); POSTERS = {}; }
+    var writeTimer = null;
+    function persistPosters(){
+      clearTimeout(writeTimer);
+      writeTimer = setTimeout(function(){
+        try{ fs.writeFileSync(FILE, JSON.stringify(POSTERS), 'utf8'); }
+        catch(e){ console.error('[posters] write failed:', e && e.message); }
+      }, 150);
+    }
+    function log(m){ try{ console.log('[posters] ' + m); }catch(e){} }
+
+    function readBody(req, cb){
+      var b = ''; var big = false;
+      req.on('data', function(c){ b += c; if (b.length > 24 * 1024 * 1024){ big = true; req.destroy(); } });
+      req.on('end', function(){ if (big) return cb('too large'); try{ cb(null, b ? JSON.parse(b) : {}); }catch(e){ cb('bad json'); } });
+      req.on('error', function(e){ cb(String(e && e.message || e)); });
+    }
+
+    var R = global.__rsRouter; if (!R){ log('router missing — skipped'); return; }
+    R.add('ALL', '/api/modeposters', function(req, res, u, real){
+      function out(code, obj){ real.json(code, obj); }
+      try{
+        if (req.method === 'GET') return out(200, { ok: true, posters: POSTERS });
+        if (req.method !== 'POST') return out(405, { ok: false, error: 'GET or POST only' });
+        return readBody(req, function(err, body){
+          if (err) return out(400, { ok: false, error: err });
+          var n = 0;
+          function set(id, data){
+            id = String(id || '').trim(); if (!id) return;
+            if (data === '' || data == null){ delete POSTERS[id]; n++; }
+            else if (typeof data === 'string' && data.indexOf('data:image/') === 0){ POSTERS[id] = data; n++; }
+          }
+          if (body && body.bulk && typeof body.bulk === 'object'){ Object.keys(body.bulk).forEach(function(id){ set(id, body.bulk[id]); }); }
+          else { set(body && body.id, body && body.data); }
+          if (n) persistPosters();
+          out(200, { ok: true, saved: n, count: Object.keys(POSTERS).length });
+        });
+      }catch(e){ return out(500, { ok: false, error: String(e && e.message || e) }); }
+    });
+    log('active via route table: ' + Object.keys(POSTERS).length + ' stored (' + FILE + ')');
+  }catch(e){ console.error('[posters] patch failed to initialise:', e && e.message); }
 })();
 
 /* ================= ROOMSCAPE SCENE DIMS (v2.41, 2026-07-16) =================
@@ -3138,6 +3025,9 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
   } catch (e) { try { console.error('[playlists] init failed:', e && e.message); } catch (_) {} }
 })();
 /* ================= ROOMSCAPE EFFECTS EDITOR (2026-07-18) =================
+   Phase 2b (2026-08-06): the /api/social-config route is registered through
+   the RS-ROUTE-DISPATCH router (was a prepend listener); handler logic and
+   the closure-backed socialList override are unchanged.
    RS-EFFECTS v1.4 — persistence + APIs for user-editable effect buttons
    v1.4: per-effect gain (0-100 volume %) and maxS (1-120s cap; the fx.js
    SFX SHAPER fades out and stops the sound at the cap on every TV).
@@ -3210,15 +3100,10 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       }
     } catch (e) { console.error('[effects] socialList override failed:', e && e.message); }
 
-    if (typeof server === 'undefined' || !server || !server.prependListener) return;
-    server.prependListener('request', function (req, res) {
-      var u; try { u = new URL(req.url, 'http://localhost'); } catch (e) { return; }
+    var R = global.__rsRouter; if (!R) { console.log('[effects] router missing — route skipped'); return; }
+    R.add('ALL', '/api/social-config', function (req, res, u, real) {
       var p = u.pathname;
-      if (p !== '/api/social-config') return;
-      var W = res.writeHead.bind(res), E = res.end.bind(res);
-      res.writeHead = res.setHeader = function () { return res; };
-      res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+      function out(code, obj) { real.json(code, obj); }
       try {
         if (p === '/api/social-config') {
           if (req.method === 'GET') {
@@ -3244,7 +3129,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         }
       } catch (e) { out(500, { ok: false, error: String((e && e.message) || e) }); }
     });
-    console.log('[effects] ready — GET/POST /api/social-config (native /api/sounds untouched)');
+    console.log('[effects] ready — GET/POST /api/social-config via route table (native /api/sounds untouched)');
   } catch (e) { try { console.error('[effects] init failed:', e && e.message); } catch (_) {} }
 })();
 /* ================= ROOMSCAPE PROFILES GUARD (2026-07-18) =================
@@ -3569,6 +3454,8 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
   } catch (e) { try { console.error('[rules-edit] init failed:', e && e.message); } catch (_) {} }
 })();
 /* ================= ROOMSCAPE MUSIC VIZ STORE (2026-07-18) =================
+   Phase 2b (2026-08-06): registered through the RS-ROUTE-DISPATCH router
+   (was its own prepend listener + res-neuter); handler logic unchanged.
    RS-MUSIC-VIZ-STORE v1 — per-mode music-visualizer config.
    viz.json { modes: { <game>: { on, style, frames:'all'|[L1..R3], color:'auto'|#hex,
    sens 0.4-2.5, shuffleMin 1-60, nowPlaying bool } } } — its own file (like
@@ -3604,14 +3491,9 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       out.nowPlaying = v.nowPlaying !== false;
       return out;
     }
-    if (typeof server === 'undefined' || !server || !server.prependListener) return;
-    server.prependListener('request', function (req, res) {
-      var u; try { u = new URL(req.url, 'http://localhost'); } catch (e) { return; }
-      if (u.pathname !== '/api/viz') return;
-      var W = res.writeHead.bind(res), E = res.end.bind(res);
-      res.writeHead = res.setHeader = function () { return res; };
-      res.write = res.end = function () { return true; };
-      function out(code, obj) { try { W(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(obj)); } catch (e) {} }
+    var R = global.__rsRouter; if (!R) { console.log('[viz] router missing — skipped'); return; }
+    R.add('ALL', '/api/viz', function (req, res, u, real) {
+      function out(code, obj) { real.json(code, obj); }
       try {
         if (req.method === 'GET') {
           var st = load();
@@ -3643,7 +3525,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         return out(405, { ok: false, error: 'method' });
       } catch (e) { out(500, { ok: false, error: String((e && e.message) || e) }); }
     });
-    console.log('[viz] ready — GET/POST /api/viz (music visualizer config)');
+    console.log('[viz] ready — GET/POST /api/viz via route table (music visualizer config)');
   } catch (e) { try { console.error('[viz] init failed:', e && e.message); } catch (_) {} }
 })();
 

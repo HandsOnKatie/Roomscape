@@ -1,5 +1,6 @@
 /* ===================================================================
-   The Immersion Engine — shared core (engine.js)  v0.77  (v0.77: WS liveness watchdog — client ping every 20s + force-close after 90s silence so a silently-dead TCP connection re-enters the reconnect loop instead of freezing the frame [L2/Goldfinger incident 2026-07-24]; WebSocket constructor throw now re-arms retry instead of permanently killing the loop)
+   The Immersion Engine — shared core (engine.js)  v0.78  (v0.78: N-frame layouts — IE.LAYOUT + IE.setLayout(l) adopt the conductor's /api/layout; IE.wallKeyOf/wallFramesOf/slotOf/wallSizeOf replace all wall-of-3 math; FRAME_IDS mutated in place so old references stay live; pano width set per wall size)
+   (v0.77: WS liveness watchdog — client ping every 20s + force-close after 90s silence so a silently-dead TCP connection re-enters the reconnect loop instead of freezing the frame [L2/Goldfinger incident 2026-07-24]; WebSocket constructor throw now re-arms retry instead of permanently killing the loop)
    (v0.76: 'viz' + 'playlist' frame kinds — music visualiser & now-playing become Wall content types; IE.VIZ_PALETTES + palStops/palAt/palCss shared colour palettes (gold, VU, sunset, ocean, aurora, fire, ice, neon, rainbow, viridis, plasma, magma); social dispatch → IE.onSocial; captions opt-in; frame ids in hello; '_' profiles hidden)
    Classic script (no modules) so it works over file:// AND http://
    Exposes window.IE = { GAMES, MODES, ... , renderFrame, buildControlDeck,
@@ -10,6 +11,36 @@
 
   /* -------------------- DATA -------------------- */
   var FRAME_IDS = ['L1', 'L2', 'L3', 'R1', 'R2', 'R3'];
+  /* v0.78: the room layout is the single source of truth for wall/frame geometry.
+     Default = the classic two walls of three. setLayout() adopts the conductor's
+     GET /api/layout ({frames,walls}) — FRAME_IDS is mutated IN PLACE so every
+     module that captured a reference (fx.js appended blocks etc.) stays current. */
+  var LAYOUT = { walls: { L: ['L1', 'L2', 'L3'], R: ['R1', 'R2', 'R3'] } };
+  function _wallsFromFrames(fr) { var w = {}; fr.forEach(function (f) { var k = String(f).charAt(0); (w[k] = w[k] || []).push(f); }); return w; }
+  function setLayout(l) {
+    if (!l) return;
+    var walls = (l.walls && Object.keys(l.walls).length) ? l.walls
+      : (Array.isArray(l.frames) && l.frames.length ? _wallsFromFrames(l.frames) : null);
+    if (!walls) return;
+    LAYOUT.walls = walls;
+    var frames = (Array.isArray(l.frames) && l.frames.length) ? l.frames
+      : Object.keys(walls).reduce(function (a, k) { return a.concat(walls[k]); }, []);
+    FRAME_IDS.length = 0;
+    frames.forEach(function (f) { FRAME_IDS.push(f); });
+  }
+  function wallKeyOf(idx) {
+    var f = FRAME_IDS[idx], ks = Object.keys(LAYOUT.walls);
+    for (var i = 0; i < ks.length; i++) if (LAYOUT.walls[ks[i]].indexOf(f) >= 0) return ks[i];
+    return ks[0] || 'L';
+  }
+  function wallFramesOf(idx) {   // indices (into FRAME_IDS) of every frame on idx's wall, in wall order
+    return (LAYOUT.walls[wallKeyOf(idx)] || []).map(function (f) { return FRAME_IDS.indexOf(f); }).filter(function (x) { return x >= 0; });
+  }
+  function slotOf(idx) {         // 0-based position of idx within its own wall
+    var s = (LAYOUT.walls[wallKeyOf(idx)] || []).indexOf(FRAME_IDS[idx]);
+    return s < 0 ? 0 : s;
+  }
+  function wallSizeOf(idx) { return (LAYOUT.walls[wallKeyOf(idx)] || []).length || 1; }
   var FRAMEKINDS = ['pano', 'score', 'map', 'portrait', 'photos', 'viz', 'playlist', 'clock', 'off'];
   var KIND_ICON = { pano: '', score: '▤', map: '◰', portrait: '☻', photos: '❏', viz: '🎶', playlist: '♪', clock: '◷', off: '○' };
   /* v0.76 shared colour palettes for the 🎶 Music Viz content type. Each is a set of
@@ -97,7 +128,7 @@
       zones:{ Main:true,'Cove wash':false,'Frame halos':false,'Under-table':false,Candles:false,Sconces:false },
       channels:{ music:0, amb:0, sfx:40, narr:0, master:70 },
       mutes:{ music:false, amb:false, sfx:false, narr:false, master:false },
-      frames:['pano','pano','pano','pano','pano','pano'],
+      frames:FRAME_IDS.map(function(){return 'pano';}),   /* v0.78: sized from the live layout */
       kid:false, night:false, live:false,
       rev:0
     };
@@ -244,7 +275,7 @@
   function renderFrame(container, frameId, state) {
     ensureStyles();
     var idx = frameIndex(frameId); if (idx < 0) idx = 0;
-    var col = idx % 3;
+    var col = slotOf(idx), pw = 'width:' + (wallSizeOf(idx) * 100) + '%;';   /* v0.78: slot + wall width from IE.LAYOUT, not %3 */
     var g = GAMES[state.game] || GAMES.dining;
     var m = MODES[state.mode] || MODES.dining;
     var kind = (state.frames && state.frames[idx]) || 'pano';
@@ -254,15 +285,15 @@
     var inner = '';
     if (kind === 'pano') {
       if (img) {
-        // one wide image stretched across this wall's three frames; each frame shows its third
-        inner += '<div class="ie-pano" style="left:' + (-col * 100) + '%;background-image:url(\'' + img + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
+        // one wide image stretched across this wall's N frames; each frame shows its slice
+        inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background-image:url(\'' + img + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
       } else {
-        inner += '<div class="ie-pano" style="left:' + (-col * 100) + '%;background:' + g.pano + '"></div>';
+        inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background:' + g.pano + '"></div>';
         inner += '<div class="ie-glyph">' + g.glyph + '</div>';
       }
       if (state.captions) inner += '<div class="ie-cap">' + g.desc + '</div>';
     } else if (kind === 'off') {
-      inner += '<div class="ie-pano" style="left:' + (-col * 100) + '%;background:#0c0d12"></div>';
+      inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background:#0c0d12"></div>';
     } else if (kind === 'score') {
       inner += panelScore(g);
     } else if (kind === 'map') {
@@ -293,7 +324,7 @@
     inner += '<div class="ie-tint" style="background:' + tint + ';opacity:' + tintOpacity + '"></div>';
     inner += '<div class="ie-dim" style="opacity:' + dark + '"></div>';
     inner += '<div class="ie-halo" style="box-shadow:' + halo + '"></div>';
-    inner += '<div class="ie-id" data-ieid>' + FRAME_IDS[idx] + '</div>';
+    inner += '<div class="ie-id" data-ieid>' + ((frameId && String(frameId).toUpperCase()) || FRAME_IDS[idx]) + '</div>';   /* v0.78: show the real id even when it isn't in the layout */
     container.innerHTML = inner;
   }
 
@@ -513,8 +544,8 @@
     +     '<div class="ie-zt" style="margin-top:12px">Zones</div><div class="ie-zones" data-zones></div></div></div></div>'
     +   '<div class="ie-pane" data-pane="sound"><div class="ie-zt">Audio mixer — four layers + master</div><div class="ie-mixer" data-mixer></div>'
     +     '<div class="ie-np"><div data-npt>Silent</div><div class="ie-sp"></div><div style="color:var(--ink-faint)" data-npa>Ambience: —</div></div></div>'
-    +   '<div class="ie-pane" data-pane="wall"><div class="ie-zt">Six-frame layout — tap a frame to change what it shows</div><div class="ie-wgrid" data-wgrid></div>'
-    +     '<div style="font-size:10.5px;color:var(--ink-faint);margin-top:10px">L1–L3 = left wall · R1–R3 = right wall · cycle: Panorama → Score → Map → Portrait → Clock → Off</div></div>'
+    +   '<div class="ie-pane" data-pane="wall"><div class="ie-zt">Wall layout — tap a frame to change what it shows</div><div class="ie-wgrid" data-wgrid></div>'
+    +     '<div style="font-size:10.5px;color:var(--ink-faint);margin-top:10px">Frames are grouped by wall (see the id badges) · cycle: Panorama → Score → Map → Portrait → Clock → Off</div></div>'
     +   '<div class="ie-pane" data-pane="phase"><div class="ie-zt">Game phase</div><div class="ie-tl" data-tl></div>'
     +     '<div class="ie-pcs"><button class="ie-pb" data-prev>‹ Previous</button><button class="ie-pb primary" data-next>Advance phase ›</button></div></div>'
     +   '<div class="ie-pane" data-pane="style"></div>'
@@ -652,7 +683,7 @@
           GAMES[k] = Object.assign({ glyph: '▦', pano: 'linear-gradient(160deg,#1c1e26,#0f1117)' }, g, {
             name: p.name || k, accent: p.accent || '#c9a35e', desc: p.ambience || '', ambience: p.ambience || '—',
             music: p.music || '—', light: p.light || 'gallery',
-            frames: p.frames || g.frames || ['pano', 'pano', 'pano', 'pano', 'pano', 'pano'],
+            frames: p.frames || g.frames || FRAME_IDS.map(function () { return 'pano'; }),   /* v0.78 */
             _thumb: sc ? (sc.thumb || sc.sample) : null
           });
         });
@@ -800,7 +831,9 @@
 
   /* -------------------- EXPORT -------------------- */
   global.IE = {
-    FRAME_IDS: FRAME_IDS, FRAMEKINDS: FRAMEKINDS, GAMES: GAMES, GAME_ORDER: GAME_ORDER,
+    FRAME_IDS: FRAME_IDS, LAYOUT: LAYOUT, setLayout: setLayout,   /* v0.78 */
+    wallKeyOf: wallKeyOf, wallFramesOf: wallFramesOf, slotOf: slotOf, wallSizeOf: wallSizeOf,
+    FRAMEKINDS: FRAMEKINDS, GAMES: GAMES, GAME_ORDER: GAME_ORDER,
     MODES: MODES, MODE_ORDER: MODE_ORDER, LIGHT_SCENES: LIGHT_SCENES, ZONES: ZONES, CHANNELS: CHANNELS,
     defaultState: defaultState, renderFrame: renderFrame, buildControlDeck: buildControlDeck,
     createBus: createBus, toast: toast, ensureStyles: ensureStyles, frameIndex: frameIndex,

@@ -1,5 +1,10 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.41
+   RoomScape — Play & Design app (app.js)  v3.42
+   v3.42 (Phase 2a): N-frame layouts — buildCanvas creates the wall hosts
+   (label + row per wall key, grid = one column per wall) from the conductor's
+   /api/layout instead of the fixed Left/Right pair in app.html; boot calls
+   IE.setLayout so engine wall helpers follow; appended blocks fall back to
+   the live IE.FRAME_IDS, never a static six-frame literal.
    v3.41: ⏹ Stop all sounds — button in 🗣 Moments (next to Announce) and in the
    ⚙ Room audio card, both POST /api/audio/stop (conductor v4.24 + fx v1.39).
    v3.40: 🎉 GAMES TAB (RS-GAMES, conductor v4.23, fx v1.38) — a new top-level
@@ -597,6 +602,7 @@
         layout.walls = (lj.walls && Object.keys(lj.walls).length) ? lj.walls : wallsFromFrames(layout.frames);
         FRAME_IDS = layout.frames;
         window.__rsLayout = layout;
+        if (IE.setLayout) IE.setLayout(layout);   /* Phase 2a: engine helpers (slotOf/wallKeyOf/…) follow the adopted layout */
         if ($$('#walls .fr').length && $$('#walls .fr').length !== FRAME_IDS.length) $$('#walls .fr').forEach(function (f) { f.remove(); });   // boot retry after a layout change: force a canvas rebuild
       }
       profiles = r[0].profiles || {}; tagmap = r[0].tagmap || {}; settings = r[0].settings || {};
@@ -3391,13 +3397,19 @@
   function bgPreviewUrl(bg) { if (!bg || !bg.key) return null; var s = byKey[resolveSceneKey(bg.key)]; return s ? (s.sample || s.thumb || null) : null; }   /* v2.65 */
   function buildCanvas() {
     /* v2.64: walls & frames come from the conductor's layout — no two-walls-of-three
-       literal. Wall key 'L' paints into #wallL, 'R' into #wallR (positional fallback
-       for any exotic key). Unknown hosts are skipped rather than guessed. */
+       literal. Phase 2a: the wall hosts themselves are created here (app.html ships
+       an empty #walls) — one label + row per wall key, grid sized to the wall count,
+       so a single-wall layout renders one full-width column. */
     var wallKeys = Object.keys(layout.walls);
-    var hosts = $$('#walls > div');
-    wallKeys.forEach(function (wk, wi) {
-      var host = $('#wall' + wk) || hosts[wi]; if (!host) return;
-      host.innerHTML = '';
+    var wallsBox = $('#walls');
+    wallsBox.innerHTML = '';
+    wallsBox.style.gridTemplateColumns = 'repeat(' + Math.max(1, wallKeys.length) + ', 1fr)';
+    wallKeys.forEach(function (wk) {
+      var wrap = D.createElement('div');
+      var lab = D.createElement('div'); lab.className = 'wlab';
+      lab.textContent = wk === 'L' ? 'Left wall' : wk === 'R' ? 'Right wall' : 'Wall ' + wk;
+      var host = D.createElement('div'); host.className = 'wrow'; host.id = 'wall' + wk;
+      wrap.appendChild(lab); wrap.appendChild(host); wallsBox.appendChild(wrap);
       layout.walls[wk].forEach(function (fid) {
         var fidx = FRAME_IDS.indexOf(fid); if (fidx < 0) return;
         (function (i) {
@@ -4979,7 +4991,7 @@
   function el(tag, css, html){ var e=D.createElement(tag); if(css)e.style.cssText=css; if(html!=null)e.innerHTML=html; return e; }
   function jget(u){ return fetch(u,{cache:'no-store'}).then(function(r){return r.json();}); }
   function jpost(u,b){ return fetch(u,{method:'POST',headers:b?{'Content-Type':'application/json'}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().catch(function(){return{ok:r.ok};});}); }
-  function FRAMES_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(window.IE&&IE.FRAME_IDS)||['L1','L2','L3','R1','R2','R3']; }   /* v2.64: layout from the conductor */
+  function FRAMES_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS); }   /* v2.64: layout from the conductor (Phase 2a: no static literal) */
   var GOLD='var(--gold)', LINE='#2a2a32', PANEL='#16161c', INK='#ece7db', FAINT='#8f8a7d';   /* v2.44 (QW15): app palette, was #c8a24a */
 
   // ---- launcher (raised above the bottom toolbar so it never covers app controls) ----
@@ -5124,7 +5136,7 @@
    Appended to app.js; window/DOM/IE globals + fetch only. */
 ;(function(){
   if (window.__rsMediaFxApp) return; window.__rsMediaFxApp = true;
-  function FRAME_IDS_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(window.IE&&IE.FRAME_IDS)||['L1','L2','L3','R1','R2','R3']; }   /* v2.64: layout from the conductor */
+  function FRAME_IDS_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS); }   /* v2.64: layout from the conductor (Phase 2a: no static literal) */
   function api(p, body){ return fetch(p, body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined).then(function(r){return r.json();}); }
   function ensureMaps(){ IE._imgAdjust = IE._imgAdjust || {}; IE._overlayFx = IE._overlayFx || {}; }
   function regrade(){ try{ if(IE._regradeAll) IE._regradeAll(); }catch(e){} }
@@ -5886,7 +5898,7 @@
       icons.forEach(function(e){ e.style.display=''; });
       var design=document.querySelector('#vdesign');
       if(!design || getComputedStyle(design).display==='none') return;
-      var nfr=((window.__rsLayout&&window.__rsLayout.frames)||['L1','L2','L3','R1','R2','R3']).length;   /* v2.64 */
+      var nfr=((window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS)).length;   /* v2.64 (Phase 2a: no static literal) */
       var els=[].slice.call(document.querySelectorAll('#vdesign .ie-frame')).slice(0,nfr);
       for(var i=0;i<els.length;i++){
         var host=els[i]; if(!host) continue;
@@ -5921,7 +5933,7 @@
 
   var game=null, cfg=null, scenes=null, previewIdx={};   // cfg = LEGACY store (read-only seed); previewIdx per frame (session only)
   function jget(u){ return fetch(u).then(function(r){ return r.json(); }); }
-  function FR_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(window.IE&&IE.FRAME_IDS)||['L1','L2','L3','R1','R2','R3']; }   /* v2.64 */
+  function FR_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS); }   /* v2.64 (Phase 2a: no static literal) */
   function curMode(){ var el=document.querySelector('.scard.sel[data-id]'); return el?el.dataset.id:null; }
   function selFrame(){
     var chips=[].slice.call(document.querySelectorAll('#insp button.chip'));
@@ -6261,7 +6273,7 @@
 
   function jget(u){ return fetch(u).then(function(r){ return r.json(); }); }
   function curMode(){ var el=document.querySelector('.scard.sel[data-id]'); return el?el.dataset.id:null; }
-  function FR_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(window.IE&&IE.FRAME_IDS)||['L1','L2','L3','R1','R2','R3']; }   /* v2.64 */
+  function FR_(){ return (window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS); }   /* v2.64 (Phase 2a: no static literal) */
   function selFrame(){
     var chips=[].slice.call(document.querySelectorAll('#insp button.chip'));
     for(var i=0;i<chips.length;i++){ if(/\bon\b/.test(chips[i].className)){ var ix=FR_().indexOf((chips[i].textContent||'').trim()); if(ix>=0) return ix; } }
@@ -6657,7 +6669,7 @@
    Appended to app.js. */
 ;(function(){
   if (window.__rsSoundStudio) return; window.__rsSoundStudio = true;
-  function FR(){ return (window.__rsLayout&&window.__rsLayout.frames)||(window.IE&&IE.FRAME_IDS)||['L1','L2','L3','R1','R2','R3']; }   /* v2.64: layout from the conductor */
+  function FR(){ return (window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS); }   /* v2.64: layout from the conductor (Phase 2a: no static literal) */
   var SP_LABEL={all:'All TVs',random:'Random TV',sweep:'Sweep L→R',sweeprev:'Sweep R→L'};
   var search='', selDir='', menuFor=null, lastSig='', prevAudio=null, prevKey='', moreDirs=false;
   var vizCfg=null, vizGame=null;
@@ -7110,7 +7122,7 @@
    side to _backups/rules-history). Appended to app.js. */
 ;(function(){
   if (window.__rsRulesLens) return; window.__rsRulesLens = true;
-  function FR(){ return (window.__rsLayout&&window.__rsLayout.frames)||(window.IE&&IE.FRAME_IDS)||['L1','L2','L3','R1','R2','R3']; }   /* v2.64: layout from the conductor */
+  function FR(){ return (window.__rsLayout&&window.__rsLayout.frames)||(IE.FRAME_IDS); }   /* v2.64: layout from the conductor (Phase 2a: no static literal) */
   var DEFROLE={L1:'setup',L2:'video',L3:'turn',R1:'win',R2:'video',R3:'tips'};   // classic-wall defaults; unknown frames fall back to 'none'
   var ROLES=[['video','🎬 Video'],['setup','📋 Setup'],['turn','🎲 Your turn'],['win','🏆 Winning'],['tips','💡 Tips'],['none','◻ Blank']];
   var games={}, byName={}, profiles={}, active=false, curKey=null, curName='', dirty=false;

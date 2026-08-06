@@ -1,5 +1,9 @@
 /* ===================================================================
-   The Immersion Engine — transition & effects layer (fx.js)  v1.39
+   The Immersion Engine — transition & effects layer (fx.js)  v1.40
+   v1.40: N-frame layouts — all wall-of-3 math (slot = idx%3, wall = idx<3,
+   pano width 300%, GL slice /3.0) now flows from IE.LAYOUT via IE.slotOf /
+   IE.wallKeyOf / IE.wallFramesOf / IE.wallSizeOf; fallback frame lists come
+   from IE.FRAME_IDS (kept live by IE.setLayout).
    v1.39 (2026-08-02): stop-all-sounds — playSfx tracks its live Audio elements in a
    registry, new IE.stopAllSfx() pauses + clears them all, and IE.onSocial honours
    {stop:true} broadcasts from the conductor's POST /api/audio/stop (v4.24).
@@ -376,22 +380,23 @@
 
   /* ====================== content builder ====================== */
   function isVid(u) { return !!(u && /\.(mp4|webm|m4v|mov)$/i.test(u)); }
-  function mediaEl(url, col, solo, fit) {   // solo=true: render whole image; false: wall-split slice. v1.18: fit = cover|contain|stretch|width|height (solo only)
+  function wallW(wsz) { return 'width:' + ((wsz || 3) * 100) + '%;'; }   /* v1.40: pano strip spans the whole wall (N frames, not always 3) */
+  function mediaEl(url, col, solo, fit, wsz) {   // solo=true: render whole image; false: wall-split slice. v1.18: fit = cover|contain|stretch|width|height (solo only)
     var portrait = solo;
     if (isVid(url)) {
       var vf = !portrait ? null : (fit === 'stretch' ? 'fill' : (fit === 'contain' || fit === 'width' || fit === 'height') ? 'contain' : 'cover');
-      var st = portrait ? 'left:0;width:100%;height:100%;object-fit:' + vf : 'left:' + (-col * 100) + '%;object-fit:fill';
+      var st = portrait ? 'left:0;width:100%;height:100%;object-fit:' + vf : wallW(wsz) + 'left:' + (-col * 100) + '%;object-fit:fill';
       return '<video class="ie-pano" autoplay muted loop playsinline preload="auto" style="' + st + '"><source src="' + url + '"></video>';
     }
     if (portrait) {
       var bs = fit === 'contain' ? 'contain' : fit === 'stretch' ? '100% 100%' : fit === 'width' ? '100% auto' : fit === 'height' ? 'auto 100%' : 'cover';
       return '<div class="ie-pano" style="left:0;width:100%;background-image:url(\'' + url + '\');background-size:' + bs + ';background-position:center;background-repeat:no-repeat"></div>';
     }
-    return '<div class="ie-pano" style="left:' + (-col * 100) + '%;background-image:url(\'' + url + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
+    return '<div class="ie-pano" style="' + wallW(wsz) + 'left:' + (-col * 100) + '%;background-image:url(\'' + url + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
   }
-  function panoLayer(img, col, gradient) {
-    if (img) return mediaEl(img, col, false);
-    return '<div class="ie-pano" style="left:' + (-col * 100) + '%;background:' + gradient + '"></div>';
+  function panoLayer(img, col, gradient, wsz) {
+    if (img) return mediaEl(img, col, false, null, wsz);
+    return '<div class="ie-pano" style="' + wallW(wsz) + 'left:' + (-col * 100) + '%;background:' + gradient + '"></div>';
   }
   function vidPoster(url) {   // design-preview stand-in for video scenes (v0.92; v0.93 click-to-play)
     var name = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1)).replace(/\.[^.]+$/, '');
@@ -414,7 +419,7 @@
   });
   function buildLayerHTML(state, idx) {
     var g0 = IE.GAMES[state.game] || IE.GAMES.dining, m = IE.MODES[state.mode] || IE.MODES.dining;
-    var kind = (state.frames && state.frames[idx]) || 'pano', col = idx % 3;
+    var kind = (state.frames && state.frames[idx]) || 'pano', col = IE.slotOf(idx), wsz = IE.wallSizeOf(idx);   /* v1.40: wall math from IE.LAYOUT */
     var img = state.frameImages && state.frameImages[idx];
     if (kind === 'pano') {
       // v1.01: mode-level wall layout (state.wallFit) overrides the per-frame guess:
@@ -425,15 +430,15 @@
       if (state.wallFit === 'fill') solo = !!img;
       else if (state.wallFit === 'span') solo = false;
       else {
-        var ws = idx < 3 ? 0 : 3, shared = 0;
-        if (img && state.frameImages) for (var k2 = ws; k2 < ws + 3; k2++) if (state.frameImages[k2] === img) shared++;
+        var shared = 0;   /* v1.40: "does this wall share one image?" over the wall's real frames */
+        if (img && state.frameImages) IE.wallFramesOf(idx).forEach(function (k2) { if (state.frameImages[k2] === img) shared++; });
         solo = !!img && shared < 2;
       }
-      return (img ? mediaEl(img, col, solo, (state.sceneFits && state.sceneFits[idx]) || 'cover') : panoLayer(null, col, g0.pano)) + (img ? '' : '<div class="ie-glyph">' + g0.glyph + '</div>') + (state.captions ? '<div class="ie-cap">' + g0.desc + '</div>' : '');
+      return (img ? mediaEl(img, col, solo, (state.sceneFits && state.sceneFits[idx]) || 'cover', wsz) : panoLayer(null, col, g0.pano, wsz)) + (img ? '' : '<div class="ie-glyph">' + g0.glyph + '</div>') + (state.captions ? '<div class="ie-cap">' + g0.desc + '</div>' : '');
     }
-    if (kind === 'off') return '<div class="ie-pano" style="left:' + (-col * 100) + '%;background:#0c0d12"></div>';
+    if (kind === 'off') return '<div class="ie-pano" style="' + wallW(wsz) + 'left:' + (-col * 100) + '%;background:#0c0d12"></div>';
     if (kind === 'photos') return '<div class="ie-photos"></div>';
-    if (kind === 'portrait') { if (img) return mediaEl(img, col, true, (state.sceneFits && state.sceneFits[idx]) || 'cover') + (state.captions ? '<div class="ie-cap">' + g0.desc + '</div>' : ''); return portraitPanel(g0); }
+    if (kind === 'portrait') { if (img) return mediaEl(img, col, true, (state.sceneFits && state.sceneFits[idx]) || 'cover', wsz) + (state.captions ? '<div class="ie-cap">' + g0.desc + '</div>' : ''); return portraitPanel(g0); }
     if (kind === 'score') return scorePanel(g0, state);
     if (kind === 'map') return mapPanel(g0);
     if (kind === 'clock') return clockPanel(g0, state);
@@ -908,8 +913,8 @@
   }
 
   /* ====================== WebGL ripple/morph (optional, auto-fallback) ====================== */
-  var FS = 'precision mediump float;uniform sampler2D u0;uniform sampler2D u1;uniform float p;uniform float mode;uniform float col;varying vec2 v;'
-    + 'void main(){vec2 uv=vec2((v.x+col)/3.0,1.0-v.y);'
+  var FS = 'precision mediump float;uniform sampler2D u0;uniform sampler2D u1;uniform float p;uniform float mode;uniform float col;uniform float slots;varying vec2 v;'
+    + 'void main(){vec2 uv=vec2((v.x+col)/slots,1.0-v.y);'   /* v1.40: slice width = 1/wall-size, not 1/3 */
     + 'if(mode<0.5){float d=sin((v.y+p)*22.0)*0.02*(1.0-abs(p-0.5)*2.0);vec2 o=vec2(d,0.0);vec4 a=texture2D(u0,uv+o);vec4 b=texture2D(u1,uv-o);gl_FragColor=mix(a,b,smoothstep(0.0,1.0,p));}'
     + 'else{float n=fract(sin(dot(floor(v*24.0),vec2(12.9,78.2)))*43758.5);float m=smoothstep(p-0.25,p+0.25,n);vec2 o=vec2((0.5-n)*0.06*(1.0-p),0.0);vec4 a=texture2D(u0,uv+o);vec4 b=texture2D(u1,uv);gl_FragColor=mix(a,b,m);}}';
   var VS = 'attribute vec2 a;varying vec2 v;void main(){v=(a+1.0)*0.5;gl_Position=vec4(a,0.0,1.0);}';
@@ -938,6 +943,7 @@
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, t1); gl.uniform1i(gl.getUniformLocation(pr, 'u1'), 1);
       gl.uniform1f(gl.getUniformLocation(pr, 'mode'), style === 'ripple' ? 0.0 : 1.0);
       gl.uniform1f(gl.getUniformLocation(pr, 'col'), col);
+      gl.uniform1f(gl.getUniformLocation(pr, 'slots'), IE.wallSizeOf(view.idx) || 3);   /* v1.40 */
       var uP = gl.getUniformLocation(pr, 'p');
       view.stage.appendChild(cv);
       var start = performance.now(), checked = false;
@@ -1609,7 +1615,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
          times themselves tick in place and must NOT be in the signature. */
       + '|' + (state.timer.type === 'chess' && state.timer.chess && Array.isArray(state.timer.chess.players)
           ? state.timer.chess.players.map(function (p) { return p && p.name; }).join(',') : '')) : '') + '|' + (kind === 'score' && state.scores ? JSON.stringify(state.scores) : '') + '|' + (fx && fx._n ? fx._n : '')
-      + '|' + (kind === 'photos' && state.photos ? JSON.stringify(state.photos) : '') + /*panoSigFix*/ '|' + (kind==='pano' && state.frameImages ? [state.frameImages[idx<3?0:3],state.frameImages[(idx<3?0:3)+1],state.frameImages[(idx<3?0:3)+2]].join(',') : '')
+      + '|' + (kind === 'photos' && state.photos ? JSON.stringify(state.photos) : '') + /*panoSigFix v1.40: whole-wall images from IE.wallFramesOf*/ '|' + (kind==='pano' && state.frameImages ? IE.wallFramesOf(idx).map(function(k3){return state.frameImages[k3];}).join(',') : '')
       + '|' + (kind === 'viz' && state.frameViz ? JSON.stringify(state.frameViz[idx]) : '')          // v1.06 repaint when the 🎶 config changes (style/colour/bg/orientation)
       + '|' + (kind === 'playlist' && state.framePlaylist ? JSON.stringify(state.framePlaylist[idx]) : '');
     if (sig !== view.sig) {
@@ -1627,7 +1633,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
         kickMedia(nlayer);
         if ((style === 'ripple' || style === 'morph') && img && prevImg && !isVid(img) && !isVid(prevImg)) {
           set(nlayer, { opacity: '0' });
-          glTransition(view, style, img, view.idx % 3, dur,
+          glTransition(view, style, img, IE.slotOf(view.idx), dur,
             function () { set(nlayer, { opacity: '1' }); cssTransition(view, 'blurfade', nlayer, olayer, dur, ease, g0.accent); },
             function () { set(nlayer, { opacity: '1' }); if (olayer) { releaseMedia(olayer); if (olayer.parentNode) olayer.parentNode.removeChild(olayer); } });
         } else {
@@ -1859,7 +1865,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
 ;(function(){
   if (typeof window === 'undefined') return;
   if (window.__rsVarStagger) return; window.__rsVarStagger = true;
-  var FRAMES = (window.IE && window.IE.FRAME_IDS) || ['L1','L2','L3','R1','R2','R3'];
+  var FRAMES = (window.IE && window.IE.FRAME_IDS) || [];   /* v1.40: live layout array (IE.setLayout mutates in place) */
   var staggerS = 0, game = null;
 
   function myFrameIdx(){
@@ -2015,13 +2021,14 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
    Appended to fx.js. */
 ;(function () {
   if (window.__rsMusicViz) return; window.__rsMusicViz = true;
-  var FRAMES = (window.IE && window.IE.FRAME_IDS) || ['L1', 'L2', 'L3', 'R1', 'R2', 'R3'];   // v1.07: single source of truth
+  var FRAMES = (window.IE && window.IE.FRAME_IDS) || [];   // v1.07: single source of truth (v1.40: live layout array)
   var qs = new URLSearchParams(location.search);
   var FID = (qs.get('frame') || qs.get('id') || '').toUpperCase();
   if (FRAMES.indexOf(FID) < 0) return;                    // frame pages only
   var MYIDX = FRAMES.indexOf(FID);
-  var SLOT = MYIDX % 3;                                   // 0..2 within its wall
-  var WALL = MYIDX < 3 ? 'L' : 'R';
+  var SLOT = (window.IE && IE.slotOf) ? IE.slotOf(MYIDX) : MYIDX % 3;            // v1.40: position within its wall
+  var WALL = (window.IE && IE.wallKeyOf) ? IE.wallKeyOf(MYIDX) : (MYIDX < 3 ? 'L' : 'R');
+  var NSLOTS = (window.IE && IE.wallSizeOf) ? IE.wallSizeOf(MYIDX) : 3;          // v1.40: frames on this wall
   var TEST = qs.get('viztest') || null;
   var TESTPAN = qs.get('vizpan') === '1';
   var TESTCOL = qs.get('vizcolor') || null;
@@ -2178,7 +2185,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
 
   /* ---------------- geometry (panorama) ---------------- */
   var GAPF = 0.22;   // bezel+gap allowance between TVs, as fraction of one frame width
-  function geo(W) { return { slot: SLOT, slots: 3, span: W * (3 + GAPF * 2), off: SLOT * W * (1 + GAPF), wall: WALL }; }
+  function geo(W) { return { slot: SLOT, slots: NSLOTS, span: W * (NSLOTS + GAPF * (NSLOTS - 1)), off: SLOT * W * (1 + GAPF), wall: WALL }; }   /* v1.40: N-wide walls */
 
   /* ================= STYLES ================= */
   var STYLES = {};
@@ -2556,7 +2563,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
    Appended to fx.js. */
 ;(function () {
   if (window.__rsPlaylistViz) return; window.__rsPlaylistViz = true;
-  var FRAMES = (window.IE && window.IE.FRAME_IDS) || ['L1', 'L2', 'L3', 'R1', 'R2', 'R3'];   // v1.07: single source of truth
+  var FRAMES = (window.IE && window.IE.FRAME_IDS) || [];   // v1.07: single source of truth (v1.40: live layout array)
   var qs = new URLSearchParams(location.search);
   var FID = (qs.get('frame') || qs.get('id') || '').toUpperCase();
   var MYIDX = FRAMES.indexOf(FID);
