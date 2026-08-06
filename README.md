@@ -25,6 +25,7 @@
 - **Music** — via [Music Assistant](https://music-assistant.io); modes can follow with a matching playlist.
 - **Extras** — room timers, scoreboards with player profiles, party games (charades, quiz, music quiz, werewolf), cinematic mode intros, TTS announcements, NFC tag triggers.
 - **Theme packs** — drop a theme folder into `themes/` to add a mode: art, sounds, lighting, effects in one shareable bundle. See [docs/THEMES.md](docs/THEMES.md).
+- **First-run wizard** — a fresh install offers a 🚀 setup card in the app: name the room, lay out your screens, map Home Assistant TVs (with per-frame Identify) and lights, pick a theme — every step skippable, reopenable from ⚙ Settings → System.
 
 ## What you need
 

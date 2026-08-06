@@ -1,5 +1,29 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.73
+   RoomScape — Play & Design app (app.js)  v3.83
+   v3.83 (Phase 4b, RS-WIZARD): first-run experience —
+   (a) 🚀 first-run setup wizard (openSetupWizard): one sheet, five skippable
+   steps with progress dots — room name / layout (frame count + walls) /
+   Home Assistant TVs (entity dropdown per frame + 🔦 Identify via POST
+   /api/identify) / light zones / theme packs — each step POSTs /api/config
+   (RS-SETUP-API, Phase 4a) and the finish re-adopts profiles+layout via
+   boot(). Offered as a dismissible card at the top of Play on a fresh
+   install (no modes beyond the at-rest default + no theme packs' own, and
+   no HA TVs mapped), or forced with ?setup=1; "Later" sets
+   localStorage('rs-setup-dismissed'); ⚙ Settings → System gains "🚀 Setup
+   wizard" to reopen it anytime.
+   (b) empty-state fixes: zero visible modes now shows the 🪄 empty-state
+   card (an empty '<div class="cards"></div>' was truthy and masked it);
+   booting with zero modes no longer selects a phantom mode named
+   "undefined" into Design — selectMode(null) is legal, Design paints a
+   "＋ New mode" invitation instead.
+   (c) visible Design entry: ✏️ toggle in the top bar (near ⚙) switches
+   Play/Design directly; the guarded 600ms long-press on the space pill
+   stays as-is.
+   (d) 🎬 Intro templates now reference the CC0 synthesized starter sounds
+   shipped in sounds/starter/ (see its LICENSES.md) instead of the private
+   library (the sfx / loops / fanfare / ambient / scary folders) — labels adjusted where
+   the sound changed character (applause → chime; drumroll → suspense
+   whoosh; no template claims a sound it doesn't have).
    v3.73 (Phase 4a, RS-AUTH): admin-token plumbing — window.fetch is wrapped
    ONCE (just after the api/post helpers, before any appended block runs) so
    every non-GET call in the file (shared post()/api()/jpost() helpers AND
@@ -65,7 +89,8 @@
    screen cues gain ⬛ Blackout (hold seconds, blank = until launch) and ⚪ White
    flash; NEW 🖼 Title card cue (scene via the real picker + frame chips + hold);
    ⧉ Copy-from-mode select clones another mode's whole intro; a Templates chip
-   row (⛈ Thunderstorm · 🥁 Drumroll · 🚀 Ship boot-up · 🕯 Séance · 🎉 Party pop)
+   row (⛈ Storm & boom · 🌀 Suspense reveal · 🚀 Ship boot-up · 🕯 Séance · 🎉 Party
+   pop — Phase 4b labels; sounds ship in sounds/starter/)
    pre-fills the cue list from sounds already in sounds/. Solo-▶ of a title-card
    cue auto-clears after 6s so rehearsing one cue can't strand a takeover.
    v3.09: SCENE FIT
@@ -696,9 +721,10 @@
       social = (r[7] && r[7].social) || []; decks = (r[8] && r[8].decks) || [];
       sounds = (r[9] && r[9].sounds) || [];
       var first = vids()[0];
-      selectMode(first, true);
+      selectMode(first, true);   /* Phase 4b: first === undefined is fine — selectMode(null) clears Design instead of inventing a mode named "undefined" */
       setSpace(localStorage.getItem('ie-space') || 'play');
       setPlayTab(localStorage.getItem('ie-playtab') || 'modes');
+      window.__rsSetupOffer = setupWanted();   /* Phase 4b, RS-WIZARD: dismissible setup card at the top of Play */
       renderPlay(); renderNow(); renderHealth(); renderSocial(); renderAuto();
       setInterval(pollHealth, 12000);
       setInterval(renderAuto, 60000);
@@ -723,8 +749,13 @@
     $$('#spaces button').forEach(function (b) { b.classList.toggle('on', b.dataset.space === sp); });
     $('#vplay').classList.toggle('on', sp === 'play');
     $('#vdesign').classList.toggle('on', sp === 'design');
+    var dtg = $('#designtgl'); if (dtg) { dtg.classList.toggle('on', sp === 'design'); dtg.title = sp === 'design' ? 'Back to Play' : 'Open Design — build and edit modes'; }   /* Phase 4b: visible Design entry */
     if (sp === 'design') { renderStrip(); paintCanvas(); renderInspector(); renderTray(); updateDirtyUI(); }
   }
+  /* Phase 4b: the 600ms hold below stays, but Design also gets a VISIBLE door — the
+     ✏️ top-bar button (near ⚙) toggles Play/Design with a plain tap. */
+  var __dtg = $('#designtgl');
+  if (__dtg) __dtg.onclick = function () { setSpace(space === 'design' ? 'play' : 'design'); };
   /* v2.54: Design is a guarded destination — from Play it needs a 600ms hold (the same
      long-press the strip and Play cards already use); a quick tap just hints. Design→Play
      stays a normal tap, and programmatic setSpace('design') calls (New mode, ✎ Edit in
@@ -905,6 +936,7 @@
     /* v2.44 (exec4): ★ Favourites + Recently played, synthesized ahead of the sections
        (shown in the unfiltered "All" view; ids validated against current profiles) */
     var pre = '';
+    if (window.__rsSetupOffer) pre += setupCardHTML();   /* Phase 4b, RS-WIZARD: "🚀 Set up your room" card, Start / Later */
     if (playCat === 'all' || !secs.length) {
       var favIds = rsIds('rs-favs').filter(function (id) { return ids.indexOf(id) >= 0; });
       var recIds = rsIds('rs-recent').filter(function (id) { return ids.indexOf(id) >= 0 && favIds.indexOf(id) < 0; });
@@ -912,7 +944,9 @@
       if (recIds.length) pre += '<div class="psec"><div class="zt">Recently played</div><div class="cards">' + recIds.map(pcardHTML).join('') + '</div></div>';
     }
     var html = '';
-    if (!secs.length) html = '<div class="cards">' + ids.map(pcardHTML).join('') + '</div>';
+    /* Phase 4b: with ZERO visible modes this used to build '<div class="cards"></div>' —
+       truthy, so the 🪄 empty-state below never showed. Empty ids -> leave html falsy. */
+    if (!secs.length) html = ids.length ? '<div class="cards">' + ids.map(pcardHTML).join('') + '</div>' : '';
     else {
       var used = {};
       secs.forEach(function (s2) {
@@ -931,7 +965,19 @@
         + '<div style="font-size:14px;color:var(--ink);margin-bottom:6px">Nothing in ' + esc(secName || 'this section') + ' yet</div>'
         + '<div class="hint">Open a mode in Design and pick \u201c' + esc(secName || 'a section') + '\u201d in the Section dropdown above the wall — it\u2019ll appear here.</div></div>';
     }
+    /* Phase 4b: zero modes AT ALL — don't point at a Section dropdown that doesn't exist yet */
+    if (!ids.length) html = '<div class="psec" style="text-align:center;padding:46px 20px;border:1.5px dashed var(--line);border-radius:16px;color:var(--dim)">'
+      + '<div style="font-size:26px;margin-bottom:10px">🪄</div>'
+      + '<div style="font-size:14px;color:var(--ink);margin-bottom:6px">No modes yet</div>'
+      + '<div class="hint">Tap ✏️ in the top bar to open Design and create your first mode — or run the 🚀 Setup wizard (⚙ Settings → System).</div></div>';
     $('#pcards').innerHTML = pre + html;
+    /* Phase 4b, RS-WIZARD: wire the setup card (it re-renders with every renderPlay) */
+    var wzs = $('#wizstart'); if (wzs) wzs.onclick = function () { openSetupWizard(); };
+    var wzl = $('#wizlater'); if (wzl) wzl.onclick = function () {
+      try { localStorage.setItem('rs-setup-dismissed', '1'); } catch (e) {}
+      window.__rsSetupOffer = false; renderPlay(true);
+      toast('Okay — the 🚀 Setup wizard stays in ⚙ Settings → System');
+    };
     if (oldCards) animatePlayReflow(oldCards);
     $$('#pcards .pcard').forEach(function (c) {
       c.onclick = function (e) {
@@ -3153,6 +3199,14 @@
   function selectMode(id, silent) {
     var go = function () {
       cancelPreviewPush();   // v2.33: pending push of the OLD mode's draft must not fire after switching
+      /* Phase 4b: zero modes -> selectMode(undefined) used to build a phantom draft
+         literally NAMED "undefined". A null id now legally clears the selection;
+         Design paints a "＋ New mode" invitation (renderInspector/paintCanvas guards). */
+      if (id == null) {
+        curId = null; draft = null; dirty = false; sel = []; phaseSel = null;
+        if (space === 'design') { renderStrip(); paintCanvas(); renderInspector(); updateDirtyUI(); }
+        return;
+      }
       curId = id;
       draft = normalize(clone(profiles[id] || { name: id }));
       dirty = false; sel = []; phaseSel = null;
@@ -3541,6 +3595,7 @@
   function refreshSel() { $$('#walls .fr').forEach(function (f) { f.classList.toggle('sel', sel.indexOf(+f.dataset.fi) >= 0); }); }
   function paintCanvas() {
     if (!$$('#walls .fr').length) buildCanvas();   /* v2.64: layout-agnostic emptiness check */
+    if (!draft) return;   /* Phase 4b: no mode selected (fresh install) — leave the canvas dark; the inspector carries the ＋ New mode invitation */
     var st = previewState();
     $$('#walls .fr').forEach(function (f) {
       var i = +f.dataset.fi;
@@ -3629,7 +3684,15 @@
   }
   function renderInspector() {
     var el = $('#insp');
-    if (!draft) { el.innerHTML = ''; return; }
+    if (!draft) {   /* Phase 4b: fresh install, no modes — invite instead of a blank rail */
+      el.innerHTML = '<div style="text-align:center;padding:42px 16px;border:1.5px dashed var(--line);border-radius:16px;color:var(--dim)">'
+        + '<div style="font-size:24px;margin-bottom:10px">🎨</div>'
+        + '<div style="font-size:14px;color:var(--ink);margin-bottom:6px">No modes yet</div>'
+        + '<div class="hint" style="margin-bottom:14px">A mode is one look for the whole room — scenes on the TVs, lighting, sound.</div>'
+        + '<button class="btn p" id="inspnewmode">＋ New mode</button></div>';
+      var nb = $('#inspnewmode'); if (nb) nb.onclick = openNewModeSheet;
+      return;
+    }
     renderModeHeader();
     if (lens === 'sound') el.innerHTML = soundInspector();
     else if (lens === 'intro') { el.innerHTML = '<h2>🎬 Intro</h2><div class="ctx">The intro editor is on the main stage below the wall — the timeline needs the width.</div>'; renderIntroMain(); return; }   /* v3.29 (was inspector-hosted in v3.08) */
@@ -4083,31 +4146,37 @@
   /* ==================== v3.08 🎬 INTRO LENS ==================== */
   var IN_EVENTS = [{ v: 'lightning', l: '⚡ Lightning' }, { v: 'shake', l: '💥 Shake' }, { v: 'bloom', l: '🌸 Bloom' }, { v: 'softflash', l: '✨ Soft flash' }, { v: 'whiteflash', l: '⚪ White flash' }, { v: 'blackout', l: '⬛ Blackout' }];
   var IN_TYPES = { sound: '🔊', voice: '🗣', screen: '⚡', lights: '💡', frames: '🖼' };
-  /* v3.19 templates — every sound already lives in sounds/ */
+  /* v3.19 templates — Phase 4b: every sound now ships in the repo. The originals
+     referenced the private library (sfx / loops / fanfare / ambient / scary);
+     these point at the CC0 synthesized placeholders in sounds/starter/ (see its
+     LICENSES.md) so the templates WORK out of the box. Labels were adjusted
+     where the sound changed character — no template claims a sound it doesn't
+     have (thunder recordings → low boom, drumroll → suspense whoosh,
+     applause → chime). Swap in your own files any time via the cue editor. */
   var IN_TEMPLATES = {
-    storm: { l: '⛈ Thunderstorm', cues: [
-      { at: 0, type: 'sound', src: 'sounds/sfx/thunder_1.mp3', where: 'all', gain: 1 }, { at: 0, type: 'screen', event: 'lightning' },
+    storm: { l: '⛈ Storm & boom', cues: [
+      { at: 0, type: 'sound', src: 'sounds/starter/boom_low.wav', where: 'all', gain: 1 }, { at: 0, type: 'screen', event: 'lightning' },
       { at: 300, type: 'lights', action: 'flash' }, { at: 1800, type: 'lights', action: 'off' },
-      { at: 4200, type: 'sound', src: 'sounds/sfx/thunder_2.mp3', where: 'all', gain: 0.9 }, { at: 4200, type: 'screen', event: 'lightning' },
+      { at: 4200, type: 'sound', src: 'sounds/starter/boom_low.wav', where: 'all', gain: 0.9 }, { at: 4200, type: 'screen', event: 'lightning' },
       { at: 7000, type: 'lights', action: 'on', transitionS: 2 }] },
-    drumroll: { l: '🥁 Drumroll reveal', cues: [
-      { at: 0, type: 'sound', src: 'sounds/loops/mountain_audio_suspense_rhythm.mp3', where: 'all', gain: 0.9 },
+    drumroll: { l: '🌀 Suspense reveal', cues: [
+      { at: 0, type: 'sound', src: 'sounds/starter/whoosh.wav', where: 'all', gain: 0.9 },
       { at: 0, type: 'lights', action: 'dip', amount: 0.5, holdS: 6 },
-      { at: 6000, type: 'sound', src: 'sounds/fanfare/fanfare_1.mp3', where: 'all', gain: 1 }, { at: 6000, type: 'screen', event: 'bloom' }, { at: 6100, type: 'lights', action: 'flash' }] },
+      { at: 6000, type: 'sound', src: 'sounds/starter/fanfare_synth.wav', where: 'all', gain: 1 }, { at: 6000, type: 'screen', event: 'bloom' }, { at: 6100, type: 'lights', action: 'flash' }] },
     shipboot: { l: '🚀 Ship boot-up', cues: [
       { at: 0, type: 'screen', event: 'blackout' }, { at: 0, type: 'lights', action: 'off' },
-      { at: 800, type: 'sound', src: 'sounds/ambient/drone_console_room_droneloop_03.mp3', where: 'all', gain: 0.8 },
-      { at: 3500, type: 'sound', src: 'sounds/loops/alarm_call_2.mp3', where: 'random', gain: 0.5 },
-      { at: 6000, type: 'sound', src: 'sounds/sfx/mountain_audio_deep_whoosh.mp3', where: 'all', gain: 1 }, { at: 6000, type: 'screen', event: 'whiteflash' }, { at: 6200, type: 'lights', action: 'on', transitionS: 1.5 }] },
+      { at: 800, type: 'sound', src: 'sounds/starter/whoosh.wav', where: 'all', gain: 0.8 },
+      { at: 3500, type: 'sound', src: 'sounds/starter/alarm_gentle.wav', where: 'random', gain: 0.5 },
+      { at: 6000, type: 'sound', src: 'sounds/starter/whoosh.wav', where: 'all', gain: 1 }, { at: 6000, type: 'screen', event: 'whiteflash' }, { at: 6200, type: 'lights', action: 'on', transitionS: 1.5 }] },
     seance: { l: '🕯 Blackout séance', cues: [
       { at: 0, type: 'lights', action: 'off' }, { at: 0, type: 'screen', event: 'blackout' },
-      { at: 2000, type: 'sound', src: 'sounds/scary/breath_of_doom_1.mp3', where: 'all', gain: 0.9 },
-      { at: 5500, type: 'sound', src: 'sounds/scary/low_ominous_bell_ringing.mp3', where: 'all', gain: 0.8 },
-      { at: 9000, type: 'sound', src: 'sounds/sfx/thunder_1.mp3', where: 'all', gain: 1 }, { at: 9000, type: 'screen', event: 'lightning' }, { at: 9200, type: 'lights', action: 'flash' }] },
+      { at: 2000, type: 'sound', src: 'sounds/starter/whoosh.wav', where: 'all', gain: 0.9 },
+      { at: 5500, type: 'sound', src: 'sounds/starter/chime_soft.wav', where: 'all', gain: 0.8 },
+      { at: 9000, type: 'sound', src: 'sounds/starter/boom_low.wav', where: 'all', gain: 1 }, { at: 9000, type: 'screen', event: 'lightning' }, { at: 9200, type: 'lights', action: 'flash' }] },
     partypop: { l: '🎉 Party pop', cues: [
-      { at: 0, type: 'sound', src: 'sounds/fanfare/fanfare_1.mp3', where: 'all', gain: 1 }, { at: 0, type: 'screen', event: 'bloom' }, { at: 100, type: 'lights', action: 'flash' },
-      { at: 2500, type: 'sound', src: 'sounds/sfx/bass_drop_01.mp3', where: 'all', gain: 1 }, { at: 2500, type: 'screen', event: 'shake' },
-      { at: 5000, type: 'sound', src: 'sounds/sfx/applause_cheering.mp3', where: 'all', gain: 1 }, { at: 5100, type: 'lights', action: 'flash' }] }
+      { at: 0, type: 'sound', src: 'sounds/starter/fanfare_synth.wav', where: 'all', gain: 1 }, { at: 0, type: 'screen', event: 'bloom' }, { at: 100, type: 'lights', action: 'flash' },
+      { at: 2500, type: 'sound', src: 'sounds/starter/boom_low.wav', where: 'all', gain: 1 }, { at: 2500, type: 'screen', event: 'shake' },
+      { at: 5000, type: 'sound', src: 'sounds/starter/chime_soft.wav', where: 'all', gain: 1 }, { at: 5100, type: 'lights', action: 'flash' }] }
   };
   function edBase(fn) { fn(draft); dirty = true; updateDirtyUI(); }   /* intro is mode-level — never a phase patch */
   function inEnsure() { draft.intro = draft.intro || { on: false, skippable: true, kidSafeAlt: 'skip', music: null, cues: [] }; if (!Array.isArray(draft.intro.cues)) draft.intro.cues = []; return draft.intro; }
@@ -4907,6 +4976,7 @@
       + '<button class="btn" id="greload">↻ Reload all frames</button>'
       + '<button class="btn" id="grestart">⟳ Restart Conductor</button>'
       + '<button class="btn" id="gthemes">🧩 Theme packs</button>'   /* Phase 3c */
+      + '<button class="btn" id="gwizard">🚀 Setup wizard</button>'   /* Phase 4b, RS-WIZARD */
       + '<button class="btn" id="gadmtok">🔑 Admin token…</button>'   /* Phase 4a, RS-AUTH */
       + '<a class="btn gh" href="wall-test.html" target="_blank">Wall test ↗</a>'
       + '<a class="btn gh" href="api/health" target="_blank">Health ↗</a></div>'
@@ -4945,6 +5015,7 @@
     var esa = $('#edgesyncall'); if (esa) esa.onclick = function () { syncEdge(null); };
     var eca = $('#edgecleanall'); if (eca) eca.onclick = function () { cleanEdge(null); };
     $('#gthemes').onclick = openThemesSheet;   /* Phase 3c */
+    var gwz = $('#gwizard'); if (gwz) gwz.onclick = function () { openSetupWizard(); };   /* Phase 4b, RS-WIZARD */
     var gat = $('#gadmtok'); if (gat) gat.onclick = function () { askText('Admin token?', 'Printed in the server log / data/admin-token', adminTok(), function (v) { setAdminTok(String(v).trim()); toast('🔑 Admin token saved'); }); };   /* Phase 4a, RS-AUTH */
     $('#grescan').onclick = function () { post('/api/rescan').then(function () { toast('Rescanning…'); return boot2(); }); };
     $('#gposters').onclick = function () { makeVideoPosters(); };
@@ -5036,6 +5107,259 @@
         reloadProfilesLight();
       })
       .catch(function (e) { toast('Import failed — ' + ((e && e.message) || e)); });
+  }
+
+  /* ================= 🚀 First-run wizard (Phase 4b, RS-WIZARD) =================
+     One sheet (the theme sheet's pattern), five skippable steps with progress
+     dots. Every save is a POST /api/config against RS-SETUP-API (Phase 4a) —
+     the 4a fetch wrapper carries the admin token and prompts on 401. Offered
+     as a dismissible card at the top of Play when the install looks fresh
+     (no modes beyond the at-rest default — theme-pack modes, namespaced
+     pack.mode, ship with the repo and don't count — and no HA TVs mapped),
+     or forced with ?setup=1. "Later" sets localStorage('rs-setup-dismissed');
+     ⚙ Settings → System → 🚀 Setup wizard reopens it anytime. */
+  function setupFreshInstall() {
+    var ar = (typeof atRestId === 'function') ? atRestId() : ((layout && layout.atRest) || 'atrest');
+    var others = vids().filter(function (id) { return id !== ar && id.indexOf('.') < 0; });
+    var tvs = (settings && settings.ha && settings.ha.tvs) || {};
+    var mapped = Object.keys(tvs).some(function (k) { return !!tvs[k]; });
+    return !others.length && !mapped;
+  }
+  function setupWanted() {
+    try { if (new URLSearchParams(location.search).get('setup') === '1') return true; } catch (e) {}
+    try { if (localStorage.getItem('rs-setup-dismissed')) return false; } catch (e) {}
+    return setupFreshInstall();
+  }
+  function setupCardHTML() {
+    return '<div class="card" id="wizcard" style="max-width:1750px;margin:0 auto 14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+      + '<div style="font-size:26px">🚀</div>'
+      + '<div style="flex:1;min-width:220px"><b>Set up your room</b><div class="hint">Name the room, lay out your screens, connect Home Assistant, pick a theme — about two minutes, every step skippable.</div></div>'
+      + '<button class="btn p" id="wizstart">Start</button><button class="btn gh" id="wizlater">Later</button></div>';
+  }
+  /* GET with the admin token (/api/ha/entities is the one token-gated GET —
+     the 4a wrapper only decorates non-GET requests). */
+  function apiTok(p) {
+    var t = adminTok();
+    return api(p, t ? { headers: { 'x-rs-token': t } } : undefined).catch(function (e) {
+      if (e && e.status === 401) return promptAdminTok().then(function (tok) {
+        if (!tok) throw e;
+        return api(p, { headers: { 'x-rs-token': tok } });
+      });
+      throw e;
+    });
+  }
+  /* Adopt a layout the conductor just re-derived (the /api/config response
+     carries it) — the boot() adoption, minus the full re-boot. */
+  function wizAdoptLayout(lj) {
+    if (!lj || !Array.isArray(lj.frames) || !lj.frames.length) return;
+    layout.frames = lj.frames.slice();
+    layout.walls = (lj.walls && Object.keys(lj.walls).length) ? lj.walls : layout.walls;
+    layout.roles = (lj.roles && lj.roles.primary) ? lj.roles : layout.roles;
+    layout.atRest = lj.atRest || layout.atRest;
+    FRAME_IDS = layout.frames;
+    window.__rsLayout = layout;
+    if (IE.setLayout) IE.setLayout(layout);
+    $$('#walls .fr').forEach(function (f) { f.remove(); });   // force a canvas rebuild on next paint
+    if (space === 'design') paintCanvas();
+    renderHealth();
+  }
+  var wiz = null;
+  var WIZ_STEPS = ['Room', 'Screens', 'TVs', 'Lights', 'Themes'];
+  function openSetupWizard() {
+    wiz = {
+      step: 0,
+      name: (settings.rooms && settings.rooms[0] && settings.rooms[0].name) || '',
+      count: (FRAME_IDS && FRAME_IDS.length) || 6,
+      wallsMode: (layout.walls && Object.keys(layout.walls).length === 1) ? 'one' : 'two',
+      custom: ''
+    };
+    openSheet('<div class="shead"><h2>🚀 Set up your room</h2><div class="sp"></div><button class="btn gh" id="wizclose">Close</button></div>'
+      + '<div class="sbody" id="wizbody"></div>');
+    $('#wizclose').onclick = closeSheet;
+    wizPaint();
+  }
+  function wizNav(last) {
+    var dots = WIZ_STEPS.map(function (s, i) {
+      return '<span title="' + s + '" style="display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 4px;background:' + (i === wiz.step ? 'var(--gold2)' : 'var(--line)') + '"></span>';
+    }).join('');
+    return '<div style="display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap">'
+      + '<button class="btn gh" id="wzback"' + (wiz.step === 0 ? ' disabled style="opacity:.4"' : '') + '>‹ Back</button>'
+      + '<div style="flex:1;text-align:center">' + dots + '</div>'
+      + '<button class="btn gh" id="wzskip">' + (last ? 'Close' : 'Skip') + '</button>'
+      + '<button class="btn p" id="wznext">' + (last ? '✓ Finish' : 'Save & next ›') + '</button></div>'
+      + '<div class="hint" style="margin-top:10px">Saving asks for the admin token once — the Conductor printed it in its log at first boot (it also lives in <b>data/admin-token</b> on the server).</div>';
+  }
+  function wizBind(saveFn) {
+    var last = wiz.step === WIZ_STEPS.length - 1;
+    var bb = $('#wzback'); if (bb) bb.onclick = function () { if (wiz.step > 0) { wiz.step--; wizPaint(); } };
+    var sb = $('#wzskip'); if (sb) sb.onclick = function () { if (last) wizFinish(); else { wiz.step++; wizPaint(); } };
+    var nb = $('#wznext'); if (nb) nb.onclick = function () {
+      var p = null;
+      try { p = saveFn ? saveFn() : null; } catch (e) { toast('Hmm — ' + (e.message || e)); return; }
+      Promise.resolve(p).then(function () {
+        if (last) wizFinish(); else { wiz.step++; wizPaint(); }
+      }).catch(function (e) { toast('Couldn’t save — ' + ((e && e.message) || 'no response')); });
+    };
+  }
+  function wizFinish() {
+    try { localStorage.setItem('rs-setup-dismissed', '1'); } catch (e) {}
+    window.__rsSetupOffer = false;
+    closeSheet();
+    toast('🚀 Setup saved — welcome home');
+    /* re-adopt everything the wizard may have changed: layout + profiles/settings */
+    api('/api/layout').then(wizAdoptLayout).catch(function () {});
+    reloadProfilesLight().catch(function () {});
+  }
+  function wizPaint() {
+    var el = $('#wizbody'); if (!el) return;
+    var s = wiz.step;
+    /* ---- S1 · room name ---- */
+    if (s === 0) {
+      el.innerHTML = '<div class="card"><div class="zt">1 · Name the room</div>'
+        + '<label class="fld"><span>Room name</span><input type="text" id="wzname" value="' + esc(wiz.name) + '" placeholder="Dining room"></label>'
+        + '<div class="hint">Used in the app header and by Home Assistant automations. Skip to keep “' + esc(wiz.name || 'Main Room') + '”.</div></div>' + wizNav(false);
+      wizBind(function () {
+        var nm = ($('#wzname').value || '').trim();
+        wiz.name = nm;
+        if (!nm) return null;
+        return post('/api/config', { rooms: [{ id: 'main', name: nm, icon: '🛋' }] }).then(function () {
+          settings.rooms = [{ id: 'main', name: nm, icon: '🛋' }];
+        });
+      });
+      setTimeout(function () { var i = $('#wzname'); if (i) i.focus(); }, 60);
+    }
+    /* ---- S2 · layout ---- */
+    else if (s === 1) {
+      var opts = ''; for (var i = 1; i <= 8; i++) opts += '<option value="' + i + '"' + (i === wiz.count ? ' selected' : '') + '>' + i + '</option>';
+      el.innerHTML = '<div class="card"><div class="zt">2 · Screens on the wall</div>'
+        + '<div class="r2"><label class="fld"><span>How many TVs / frames?</span><select id="wzcount">' + opts + '</select></label>'
+        + '<label class="fld"><span>Arranged as</span><select id="wzwalls">'
+        + '<option value="one"' + (wiz.wallsMode === 'one' ? ' selected' : '') + '>One wall</option>'
+        + '<option value="two"' + (wiz.wallsMode === 'two' ? ' selected' : '') + '>Two walls, split evenly</option>'
+        + '<option value="custom"' + (wiz.wallsMode === 'custom' ? ' selected' : '') + '>Custom…</option></select></label></div>'
+        + '<div id="wzcustomwrap" style="' + (wiz.wallsMode === 'custom' ? '' : 'display:none') + '"><label class="fld"><span>One wall per line — <b>KEY: id, id, id</b></span>'
+        + '<textarea id="wzcustom" rows="3" style="width:100%;background:#13151b;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:8px 10px;font:inherit" placeholder="L: L1, L2, L3\nR: R1, R2, R3">' + esc(wiz.custom) + '</textarea></label></div>'
+        + '<div class="hint" style="margin-top:8px">Portrait screens only in v1 — TVs mounted tall, like framed art. Changing the layout later is fine (⚙ or this wizard); the Conductor advises a restart afterwards.</div></div>' + wizNav(false);
+      var wm = $('#wzwalls'); if (wm) wm.onchange = function () { wiz.wallsMode = wm.value; $('#wzcustomwrap').style.display = wm.value === 'custom' ? '' : 'none'; };
+      wizBind(function () {
+        wiz.count = +$('#wzcount').value || 6;
+        wiz.wallsMode = $('#wzwalls').value;
+        var walls = {};
+        if (wiz.wallsMode === 'one') {
+          walls.W = []; for (var i = 1; i <= wiz.count; i++) walls.W.push('W' + i);
+        } else if (wiz.wallsMode === 'two') {
+          var nL = Math.ceil(wiz.count / 2);
+          walls.L = []; walls.R = [];
+          for (var j = 1; j <= nL; j++) walls.L.push('L' + j);
+          for (var k = 1; k <= wiz.count - nL; k++) walls.R.push('R' + k);
+          if (!walls.R.length) delete walls.R;
+        } else {
+          wiz.custom = $('#wzcustom').value || '';
+          wiz.custom.split('\n').forEach(function (line) {
+            var m = line.split(':'); if (m.length < 2) return;
+            var key = m[0].trim(); if (!key) return;
+            var ids2 = m.slice(1).join(':').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+            if (ids2.length) walls[key] = ids2;
+          });
+          if (!Object.keys(walls).length) throw new Error('give each wall a line like “L: L1, L2, L3”');
+        }
+        return post('/api/config', { layout: { walls: walls } }).then(function (r) {
+          if (r && r.layout) wizAdoptLayout(r.layout);
+          if (r && r.restartAdvised) toast('Layout saved — restart the Conductor when convenient (⚙ System → ⟳ Restart)');
+        });
+      });
+    }
+    /* ---- S3 · Home Assistant TVs ---- */
+    else if (s === 2) {
+      el.innerHTML = '<div class="card"><div class="zt">3 · Which TV is which?</div><div class="hint" id="wzhastat">Asking Home Assistant for media players…</div><div id="wztvrows"></div></div>' + wizNav(false);
+      wizBind(function () {
+        var rows = $$('#wztvrows [data-wztv]');
+        if (!rows.length) return null;   // HA missing — nothing to save
+        var tvs = {};
+        rows.forEach(function (sel2) { tvs[sel2.dataset.wztv] = sel2.value; });
+        return post('/api/config', { ha: { tvs: tvs } }).then(function () {
+          settings.ha = settings.ha || {}; settings.ha.tvs = tvs;
+        });
+      });
+      apiTok('/api/ha/entities?domain=media_player').then(function (r) {
+        var st = $('#wzhastat'), host = $('#wztvrows'); if (!st || !host) return;
+        if (!r || r.ok === false) {
+          st.innerHTML = 'Home Assistant isn’t connected' + (r && r.error && r.error !== 'ha not configured' ? ' (' + esc(r.error) + ')' : '') + '.<br>'
+            + 'Set <b>HA_URL</b> and <b>HA_TOKEN</b> in the Conductor’s <b>.env</b> and restart it — the walk-through lives in <b>docs/HA-SETUP.md</b>. Skip this step for now; the room works fine without it (no TV wake/sleep or lights).';
+          return;
+        }
+        st.textContent = 'Pick the Home Assistant media player behind each frame — 🔦 Identify flashes that frame’s ID on its TV so you can tell them apart.';
+        var cur = (settings.ha && settings.ha.tvs) || {};
+        host.innerHTML = FRAME_IDS.map(function (fid) {
+          var o = '<option value="">— none —</option>' + r.entities.map(function (en) {
+            return '<option value="' + esc(en.entity_id) + '"' + (cur[fid] === en.entity_id ? ' selected' : '') + '>' + esc(en.friendly_name) + ' (' + esc(en.entity_id) + ')</option>';
+          }).join('');
+          return '<div style="display:flex;gap:8px;align-items:center;margin-top:8px"><b style="min-width:38px">' + esc(fid) + '</b>'
+            + '<select data-wztv="' + esc(fid) + '" style="flex:1">' + o + '</select>'
+            + '<button class="btn sm" data-wzid="' + esc(fid) + '" title="Flash this frame’s ID on its TV">🔦 Identify</button></div>';
+        }).join('');
+        $$('#wztvrows [data-wzid]').forEach(function (b) {
+          b.onclick = function () { post('/api/identify', { frame: b.dataset.wzid }).then(function () { toast('🔦 Identifying ' + b.dataset.wzid); }).catch(function (e) { toast('Identify failed — ' + (e.message || e)); }); };
+        });
+      }).catch(function (e) {
+        var st = $('#wzhastat'); if (st) st.textContent = 'Couldn’t reach the Conductor’s HA bridge — ' + ((e && e.message) || 'no response') + '. Skip for now.';
+      });
+    }
+    /* ---- S4 · lights ---- */
+    else if (s === 3) {
+      el.innerHTML = '<div class="card"><div class="zt">4 · Lights (optional)</div><div class="hint" id="wzlstat">Asking Home Assistant for lights…</div><div id="wzlrows"></div></div>' + wizNav(false);
+      wizBind(function () {
+        var rows = $$('#wzlrows [data-wzlight]');
+        if (!rows.length) return null;
+        var zones = { main: [], accent: [] };
+        rows.forEach(function (sel2) { if (sel2.value === 'main' || sel2.value === 'accent') zones[sel2.value].push(sel2.dataset.wzlight); });
+        if (!zones.main.length && !zones.accent.length) return null;
+        return post('/api/config', { ha: { lightZones: zones } }).then(function () {
+          settings.ha = settings.ha || {}; settings.ha.lightZones = zones;
+        });
+      });
+      apiTok('/api/ha/entities?domain=light').then(function (r) {
+        var st = $('#wzlstat'), host = $('#wzlrows'); if (!st || !host) return;
+        if (!r || r.ok === false) {
+          st.innerHTML = 'Home Assistant isn’t connected — same story as the TVs step (<b>docs/HA-SETUP.md</b>). Skip for now.';
+          return;
+        }
+        st.textContent = 'Modes drive the “main” zone (the room’s ceiling/spots); “accent” is for lamps that should follow more gently.';
+        var lz = (settings.ha && settings.ha.lightZones) || {};
+        function zoneOf(id2) { if ((lz.main || []).indexOf(id2) >= 0) return 'main'; if ((lz.accent || []).indexOf(id2) >= 0) return 'accent'; return ''; }
+        host.innerHTML = r.entities.map(function (en) {
+          var z = zoneOf(en.entity_id);
+          return '<div style="display:flex;gap:8px;align-items:center;margin-top:8px"><div style="flex:1;min-width:0"><b>' + esc(en.friendly_name) + '</b> <span class="hint">' + esc(en.entity_id) + '</span></div>'
+            + '<select data-wzlight="' + esc(en.entity_id) + '"><option value=""' + (z === '' ? ' selected' : '') + '>— not used —</option>'
+            + '<option value="main"' + (z === 'main' ? ' selected' : '') + '>main</option>'
+            + '<option value="accent"' + (z === 'accent' ? ' selected' : '') + '>accent</option></select></div>';
+        }).join('') || '<div class="hint" style="margin-top:8px">No lights found in Home Assistant.</div>';
+      }).catch(function (e) {
+        var st = $('#wzlstat'); if (st) st.textContent = 'Couldn’t reach the Conductor’s HA bridge — ' + ((e && e.message) || 'no response') + '. Skip for now.';
+      });
+    }
+    /* ---- S5 · themes ---- */
+    else {
+      el.innerHTML = '<div class="card"><div class="zt">5 · Theme packs</div>'
+        + '<div class="hint">A theme pack is a ready-made mode — scenes, sounds, lighting — in one zip. These are installed:</div>'
+        + '<div id="wzthemes" style="margin-top:8px" class="hint">Loading…</div>'
+        + '<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="wzthimport">⇪ Import theme…</button></div>'
+        + '<div class="hint" style="margin-top:10px">More packs &amp; the pack format live in <b>THEMES.md</b> — or build your own mode in ✏️ Design and it’s yours forever.</div></div>' + wizNav(true);
+      wizBind(null);
+      var ti = $('#wzthimport'); if (ti) ti.onclick = function () {
+        var inp = $('#themesImport'); if (!inp) return;   /* the static Phase 3c input — same flow as the theme sheet */
+        inp.value = '';
+        inp.onchange = function () { var f = inp.files && inp.files[0]; if (f) sendThemeZip(f, false); };
+        inp.click();
+      };
+      api('/api/themes').then(function (j) {
+        var host = $('#wzthemes'); if (!host) return;
+        var packs = (j && j.themes) || [];
+        host.innerHTML = packs.length
+          ? packs.map(function (t) { return '🧩 <b>' + esc(t.name || t.id) + '</b> — ' + (t.modes || []).length + ' mode' + ((t.modes || []).length === 1 ? '' : 's') + ((t.missing || []).length ? ' · ⚠ ' + (t.missing || []).length + ' file(s) missing' : ''); }).join('<br>')
+          : 'No packs yet — Import one above, or drop a folder into <b>themes/</b> and Rescan.';
+      }).catch(function () {});
+    }
   }
 
   /* v1.43 make video thumbnails — the browser grabs a frame from each video and uploads it

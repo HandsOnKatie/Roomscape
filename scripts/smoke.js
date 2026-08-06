@@ -1,6 +1,18 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.6 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.7 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.7 (Phase 4b, RS-WIZARD): boot 1 gains the wizard canaries — the served
+   app page carries the ✏️ Design toggle (id="designtgl") and the served
+   /app.js carries openSetupWizard + the starter-sound remap
+   (sounds/starter/, zero private-library sound paths); POST /api/identify
+   {frame} answers 200 ok with the token and 401 without (it broadcasts the
+   WS identify message — client count may be 0 here, that's fine); the six
+   starter WAVs + LICENSES.md exist, each < 500 KB, total < 2 MB, and serve
+   over HTTP. Boot 4 is an EMPTY-profiles boot (PROFILES_FILE containing
+   {"profiles":{},"tagmap":{},"settings":{}}): GET / and /api/profiles must
+   serve without a crash. NOTE: the JS empty-state itself (🪄 card, Design
+   invitation, setup card) runs in the browser — no browser boots here, so
+   those are covered only by the canaries above.
    v1.6 (Phase 4a, RS-AUTH): boots 1+2 run with ADMIN_TOKEN=smoketoken and the
    POST helpers all send x-rs-token — so every pre-existing mutation check now
    proves the route works WITH the token (and never writes a token file into
@@ -174,6 +186,40 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     // v1.5 (Phase 3c): theme-UI canary — the static import input the theme sheet clicks
     check('app page carries the theme-packs markup hook (id="themesImport")',
       app.body.indexOf('id="themesImport"') >= 0, 'themesImport input missing from served app.html');
+
+    // ---- v1.7 (Phase 4b, RS-WIZARD): first-run wizard + empty states + starter sounds ----
+    check('app page carries the visible Design toggle (id="designtgl")',
+      app.body.indexOf('id="designtgl"') >= 0, 'designtgl button missing from served app.html');
+    const appjs = await get('/app.js');
+    check('served /app.js carries the first-run wizard (openSetupWizard)',
+      appjs.code === 200 && appjs.body.indexOf('openSetupWizard') >= 0, 'code ' + appjs.code + ', openSetupWizard missing');
+    check('served /app.js intro templates use sounds/starter/, zero private-library sound paths',
+      appjs.body.indexOf('sounds/starter/') >= 0
+        && !/sounds\/(sfx|loops|fanfare|ambient|scary)\//.test(appjs.body),
+      'starter refs ' + (appjs.body.indexOf('sounds/starter/') >= 0) + ', private refs ' + /sounds\/(sfx|loops|fanfare|ambient|scary)\//.test(appjs.body));
+    const idOk = await post('/api/identify', { frame: 'L1' });
+    let idj = null; try { idj = JSON.parse(idOk.body); } catch (e) {}
+    check('POST /api/identify {frame:"L1"} with token -> 200 ok (broadcasts WS identify)',
+      idOk.code === 200 && !!(idj && idj.ok && idj.frame === 'L1'), 'code ' + idOk.code + ' ' + idOk.body.slice(0, 120));
+    const idNo = await post('/api/identify', { frame: 'L1' }, PORT, null);
+    check('POST /api/identify without token -> 401', idNo.code === 401, 'code ' + idNo.code);
+    const WAVS = ['chime_soft.wav', 'boom_low.wav', 'whoosh.wav', 'tick.wav', 'fanfare_synth.wav', 'alarm_gentle.wav'];
+    let wavTotal = 0, wavBad = [];
+    for (const w of WAVS) {
+      try {
+        const szb = fs.statSync(path.join(ROOT, 'sounds', 'starter', w)).size;
+        wavTotal += szb;
+        if (szb <= 44 || szb >= 500 * 1024) wavBad.push(w + ':' + szb);
+      } catch (e) { wavBad.push(w + ':missing'); }
+    }
+    check('six starter WAVs exist, each < 500 KB, total < 2 MB',
+      wavBad.length === 0 && wavTotal < 2 * 1024 * 1024, 'bad ' + JSON.stringify(wavBad) + ' total ' + wavTotal);
+    check('sounds/starter/LICENSES.md exists (CC0 provenance)',
+      fs.existsSync(path.join(ROOT, 'sounds', 'starter', 'LICENSES.md')), 'LICENSES.md missing');
+    const wavHttp = await getBuf('/sounds/starter/chime_soft.wav');
+    check('starter sound serves over HTTP (RIFF magic)',
+      wavHttp.code === 200 && wavHttp.body.length > 44 && wavHttp.body.slice(0, 4).toString() === 'RIFF',
+      'code ' + wavHttp.code + ' len ' + wavHttp.body.length);
 
     const frame = await get('/frame.html?frame=L1');
     check('frame page serves', frame.code === 200, 'code ' + frame.code);
@@ -391,6 +437,42 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     }
   } catch (e) { check('first-run boot checks ran', false, String(e)); }
   child3.kill();
+
+  // ---- boot 4 (v1.7, Phase 4b): EMPTY profiles store — a truly fresh install must serve ----
+  // The browser-side empty states (🪄 card, Design "＋ New mode" invitation, 🚀 setup
+  // card) can't be asserted without a browser; this proves the server side of a
+  // zero-mode boot never crashes and still serves the app.
+  const PORT4 = PORT + 3;
+  const emptyProf = path.join(tmp, 'profiles-empty.json');
+  fs.writeFileSync(emptyProf, JSON.stringify({ profiles: {}, tagmap: {}, settings: {} }));
+  const child4 = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
+    env: Object.assign({}, process.env, {
+      PORT: String(PORT4),
+      APP_DIR: ROOT,
+      ADMIN_TOKEN: TOK,
+      PROFILES_FILE: emptyProf,
+      STATE_FILE: path.join(tmp, 'state4.json'),
+      MEDIA_DIR: path.join(tmp, 'media'),
+      HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let bootLog4 = '';
+  child4.stdout.on('data', d => bootLog4 += d);
+  child4.stderr.on('data', d => bootLog4 += d);
+  try {
+    let up4 = false;
+    for (let i = 0; i < 30 && !up4; i++) { await sleep(500); try { up4 = (await get('/api/health', PORT4)).code === 200; } catch (e) {} }
+    check('empty-profiles boot: conductor boots with {"profiles":{},"tagmap":{},"settings":{}}', up4, 'no response after 15s. Boot log:\n' + bootLog4.slice(-2000));
+    if (up4) {
+      const app4 = await get('/', PORT4);
+      check('empty-profiles boot: app page still serves (no crash)', app4.code === 200 && app4.body.length > 1000, 'code ' + app4.code);
+      const prof4 = await get('/api/profiles', PORT4);
+      let pj4 = null; try { pj4 = JSON.parse(prof4.body); } catch (e) {}
+      check('empty-profiles boot: /api/profiles answers 200 with a JSON map', prof4.code === 200 && !!(pj4 && pj4.profiles), 'code ' + prof4.code + ' ' + prof4.body.slice(0, 160));
+    }
+  } catch (e) { check('empty-profiles boot checks ran', false, String(e)); }
+  child4.kill();
 
   const fails = checks.filter(c => !c.ok).length;
   console.log('\n' + (fails ? 'SMOKE FAIL — ' + fails + ' failing' : 'SMOKE PASS — ' + checks.length + ' checks'));

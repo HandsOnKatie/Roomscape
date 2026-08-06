@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RoomScape</title>
 <style>
-  /* ============ RoomScape — Play & Design  v3.41 ============
+  /* ============ RoomScape — Play & Design  v3.51 ============
+     v3.51 (Phase 4b, RS-WIZARD): #designtgl — visible ✏️ Play/Design toggle in
+     the top bar (near ⚙; gold ring while Design is open). The first-run wizard
+     itself renders through the existing sheet styles. (Matches app.js v3.83.)
      v3.41 (2026-08-02): ⏹ Stop all sounds button in 🗣 Moments → POST
      /api/audio/stop (conductor v4.24, fx v1.39). (Matches app.js v3.41.)
      v3.40 (2026-08-02): 🎉 GAMES becomes a top-level Play tab (RS-GAMES,
@@ -84,7 +87,9 @@
   #spaces button.on{background:linear-gradient(180deg,var(--gold2),var(--gold));color:#1a1407;font-weight:700}
   /* v2.54: Design is a guarded destination — smaller ghost button; hold 600ms to enter from Play */
   #spaces button[data-space="design"]:not(.on){padding:9px 13px;font-size:11.5px;color:var(--faint);opacity:.85}
-  #gear,#calbtn{font-size:17px;padding:8px 11px;border-radius:10px;border:1px solid var(--line);background:var(--panel);cursor:pointer}
+  #gear,#calbtn,#designtgl{font-size:17px;padding:8px 11px;border-radius:10px;border:1px solid var(--line);background:var(--panel);cursor:pointer}
+  #designtgl:hover{border-color:var(--gold)}
+  #designtgl.on{border-color:var(--gold);box-shadow:inset 0 0 0 1px var(--gold);background:var(--panel3)}   /* Phase 4b: lit while Design is open */
   /* v1.80 calendar sheet */
   .calmons{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
   .calmon{position:relative;aspect-ratio:16/10;border:1px solid var(--line);border-radius:10px;background-size:cover;background-position:center;background-color:#14161d;cursor:pointer;overflow:hidden;transition:border-color .15s}
@@ -701,6 +706,7 @@
   <div class="sp"></div>
   <span id="hdot" title="Conductor"></span>
   <button id="calbtn" title="Calendar — the room's year, days and sky">📅</button>
+  <button id="designtgl" title="Open Design — build and edit modes">✏️</button><!-- Phase 4b: visible Design entry (the 600ms hold on the space pill still works) -->
   <button id="gear" title="Settings">⚙</button>
 </div>
 

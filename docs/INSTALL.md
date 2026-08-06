@@ -1,6 +1,6 @@
 # Installing Roomscape
 
-**Doc version 0.10** · Applies to the Conductor container + Ubuntu display-PC kiosk kit.
+**Doc version 0.20** · Applies to the Conductor container + Ubuntu display-PC kiosk kit. (0.20: First-run wizard section.)
 
 Two halves to install:
 
@@ -22,6 +22,21 @@ docker compose up -d
 ```
 
 Open `http://<server-ip>:8090` — the control app loads. The compose file mounts the repo read-only and keeps writable state in `data/` and thumbnails in `media/.thumbs/`; see `docker/compose.yaml` for the exact mapping.
+
+### First run — the setup wizard
+
+On its very first boot the Conductor prints an **admin token** in its log (also
+written to `data/admin-token`); any change you save from the app asks for it
+once. Grab it with `docker logs roomscape | grep "admin token"` (bare Node: it's
+in the console output).
+
+Then open the app: a **🚀 Set up your room** card sits at the top of Play. It
+walks you through — room name, how many screens and on which walls, which Home
+Assistant `media_player` sits behind each frame (the 🔦 Identify button flashes
+a frame's ID on its TV so you can tell them apart), light zones, and theme
+packs. Every step is skippable; "Later" tucks it away, and **⚙ Settings →
+System → 🚀 Setup wizard** (or adding `?setup=1` to the URL) brings it back
+anytime. Layout changes advise a Conductor restart when they're done.
 
 Updating: `git pull`, then `docker restart roomscape` (content/web files apply instantly; `conductor.js` needs the restart).
 
