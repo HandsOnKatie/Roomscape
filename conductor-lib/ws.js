@@ -1,5 +1,18 @@
 /* ===================================================================
-   conductor-lib/ws.js  v1.0
+   conductor-lib/ws.js  v1.1
+   v1.1 (RS-SEC v1.01, F2): the upgrade handshake gained two checks.
+     1. ORIGIN. Browsers ALWAYS send Origin on a WebSocket handshake; native
+        clients and kiosk shells may omit it. So: absent Origin -> allowed
+        (kiosks, curl, the smoke test); present Origin whose host differs from
+        the request Host -> 403, connection refused and logged. Without this
+        any web page the household visits could open a socket to the conductor
+        on the LAN and talk to it.
+     2. MUTATION RIGHTS. A socket is a read-only consumer unless the handshake
+        URL carries ?token=<admin token>. client.canMutate records the answer;
+        conductor.js's handleClientMessage refuses inbound {type:'state'} on a
+        socket without it. (Frames only ever send hello/ping, so they stay
+        tokenless; the app's volume slider + FX picker DO publish state and
+        must therefore connect with ?token=.)
    Extracted verbatim from conductor.js v2.62 (RoomScape Conductor v3.62 split).
    Minimal WebSocket layer: handshake, frame codec, upgrade + receive loop.
    SAFETY RULES (absolute):
@@ -33,10 +46,37 @@ module.exports = function (ctx) {
   }
   function wsSend(sock, obj) { try { sock.write(encodeFrame(JSON.stringify(obj))); } catch (e) {} }
 
+  /* RS-SEC v1.01 (F2b): same-origin check. Absent Origin = a non-browser client
+     (kiosk shell, curl, the smoke test) -> allowed. Present Origin = a browser
+     -> its host must equal the Host we were asked for. */
+  function originOk(req) {
+    const o = req.headers && req.headers.origin;
+    if (!o) return true;                                   // no Origin header — not a browser
+    if (o === 'null') return true;                         // file:// dev pages (wall-test) have origin 'null'
+    let oh; try { oh = new URL(o).host; } catch (e) { return false; }
+    const host = String((req.headers && req.headers.host) || '');
+    return !!host && oh === host;
+  }
+  function upgradeToken(req) {
+    try { return String(new URL(req.url || '/', 'http://x').searchParams.get('token') || '').trim(); }
+    catch (e) { return ''; }
+  }
+
   function handleUpgrade(req, sock) {
     const key = req.headers['sec-websocket-key']; if (!key) { sock.destroy(); return; }
+    if (!originOk(req)) {                                  // RS-SEC v1.01 (F2b)
+      console.log('[ws] REJECTED upgrade: cross-origin handshake (Origin ' + JSON.stringify(req.headers.origin) + ' != Host ' + JSON.stringify(req.headers.host) + ')');
+      try { sock.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); } catch (e) {}
+      try { sock.destroy(); } catch (e) {}
+      return;
+    }
     sock.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + wsAccept(key) + '\r\n\r\n');
-    const client = { sock, buf: Buffer.alloc(0), frag: [] }; clients.add(client);
+    /* RS-SEC v1.01 (F2a): mutation rights are decided ONCE, at handshake time. */
+    const tok = upgradeToken(req);
+    const admin = (typeof ctx.adminToken === 'function') ? String(ctx.adminToken() || '') : '';
+    const canMutate = (typeof ctx.authDisabled === 'function' && ctx.authDisabled())
+      || (!!admin && !!tok && tok.length === admin.length && crypto.timingSafeEqual(Buffer.from(tok), Buffer.from(admin)));
+    const client = { sock, buf: Buffer.alloc(0), frag: [], canMutate: canMutate }; clients.add(client);
     wsSend(sock, { ie: true, type: 'state', state: ctx.state(), t: Date.now() });
     sock.on('data', (c) => onWsData(client, c));
     sock.on('close', () => clients.delete(client));

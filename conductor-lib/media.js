@@ -1,5 +1,8 @@
 /* ===================================================================
-   conductor-lib/media.js  v1.1
+   conductor-lib/media.js  v1.2
+   v1.2 (RS-SEC v1.01, F6): mediaSafe/themeSafe/photoSafe now resolve symlinks
+        (fs.realpathSync.native) and re-check containment — lexical resolve()
+        alone let a symlink inside media/ or a theme pack read any host file.
    v1.1 (Phase 4a, RS-AUTH): serveFile CORS header now flows through the
         conductor's ctx.corsHdr policy (config-driven; default = no ACAO).
    Extracted verbatim from conductor.js v2.62 (RoomScape Conductor v3.62 split).
@@ -23,9 +26,49 @@ module.exports = function (ctx) {
   const MEDIA_DIR = ctx.MEDIA_DIR, OVERLAY_DIR = ctx.OVERLAY_DIR, PHOTOS_DIR = ctx.PHOTOS_DIR, THUMB_DIR = ctx.THUMB_DIR;
   const IMG_RE = ctx.IMG_RE, VID_RE = ctx.VID_RE, MEDIA_RE = ctx.MEDIA_RE, OVL_RE = ctx.OVL_RE;
 
-  function mediaSafe(rel) {   // resolve a media-relative path strictly inside MEDIA_DIR (v1.5)
-    const abs = path.resolve(MEDIA_DIR, rel || '');
-    return abs.startsWith(path.resolve(MEDIA_DIR) + path.sep) ? abs : null;
+  /* ---------- containment (RS-SEC v1.01, F6) ----------
+     mediaSafe / themeSafe / photoSafe used to do LEXICAL containment only:
+     path.resolve() collapses '..' but knows nothing about symlinks. A symlink
+     dropped inside the media folder — or shipped in a hand-unzipped theme pack
+     — therefore read any file on the host: the audit demonstrated
+     /media/__theme__/evil/link.txt returning /etc/passwd.
+     Fix: after the lexical check, resolve BOTH the target and the root with
+     fs.realpathSync.native and re-check containment, so the path the OS will
+     actually open is the one we vetted. A path that doesn't exist yet is not an
+     escape — realpath throws ENOENT, and we fall back to the (already
+     containment-checked) lexical answer for the callers that write. Anything
+     else that throws returns null cleanly rather than propagating.
+     PERFORMANCE NOTE: this adds one realpath (a stat-class syscall) per media
+     request. Media responses already stat + open + stream the file, and the
+     roots are cached below, so the overhead is in the noise next to the
+     existing per-request I/O — measured as acceptable for wall playback. */
+  // Only SUCCESSFUL resolutions are cached: a root that doesn't exist yet
+  // (fresh install, media share not mounted at boot) must not be remembered as
+  // "unresolvable" forever — that would kill media serving until a restart.
+  const _realRoot = Object.create(null);
+  function realRoot(dir) {
+    if (_realRoot[dir]) return _realRoot[dir];
+    let r = null;
+    try { r = fs.realpathSync.native(dir); } catch (e) { return null; }
+    _realRoot[dir] = r;
+    return r;
+  }
+  function contained(root, rel) {
+    if (!root) return null;
+    const rootAbs = path.resolve(root);
+    const abs = path.resolve(rootAbs, rel || '');
+    if (!abs.startsWith(rootAbs + path.sep)) return null;          // lexical: '..' and absolute rels
+    let realTarget;
+    try { realTarget = fs.realpathSync.native(abs); }
+    catch (e) { return (e && e.code === 'ENOENT') ? abs : null; }   // not there yet -> nothing to escape through
+    const rr = realRoot(rootAbs);
+    if (!rr) return null;
+    if (realTarget !== rr && !realTarget.startsWith(rr + path.sep)) return null;   // symlink pointed outside
+    return abs;
+  }
+
+  function mediaSafe(rel) {   // resolve a media-relative path strictly inside MEDIA_DIR (v1.5; v1.2 symlink-checked)
+    return contained(MEDIA_DIR, rel);
   }
   /* v1.1 (RS-THEMES v1): resolve a theme-pack path (the part after the
      __theme__/ pseudo-rel prefix) strictly inside THEMES_DIR — same
@@ -33,8 +76,7 @@ module.exports = function (ctx) {
   function themeSafe(rel) {
     const THEMES_DIR = ctx.THEMES_DIR;
     if (!THEMES_DIR) return null;
-    const abs = path.resolve(THEMES_DIR, rel || '');
-    return abs.startsWith(path.resolve(THEMES_DIR) + path.sep) ? abs : null;
+    return contained(THEMES_DIR, rel);
   }
 
   /* -------------------- THUMBNAILS (optional sharp/jimp, disk-cached) -------------------- */
@@ -131,9 +173,8 @@ module.exports = function (ctx) {
     }
     return out.sort();
   }
-  function photoSafe(rel) {   // resolve an album-relative path strictly inside PHOTOS_DIR (v1.2)
-    const abs = path.resolve(PHOTOS_DIR, rel || '');
-    return abs.startsWith(path.resolve(PHOTOS_DIR) + path.sep) ? abs : null;
+  function photoSafe(rel) {   // resolve an album-relative path strictly inside PHOTOS_DIR (v1.2; v1.2 symlink-checked — RS-SEC F6)
+    return contained(PHOTOS_DIR, rel);
   }
 
   /* v1.92: media manifest — every servable media/overlay/photo file with its URL

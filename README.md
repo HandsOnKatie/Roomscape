@@ -2,7 +2,7 @@
 
 **Turn a wall of TVs into an immersive room.** Roomscape drives portrait screens, smart lights, and music together as one-tap "modes" — a calm gallery at rest, an ocean floor at dinner, a haunted manor on games night.
 
-**Version: 1.00** — feature-complete first release. (Starter theme packs are still being hand-produced; the shipped `ocean-depths` pack demonstrates the format.)
+**Version: 1.01** — feature-complete first release plus a security fix pass (see [CHANGELOG](CHANGELOG.md#101--2026-08-06-conductor-v501--app-v383--engine-v091--fx-v161) and [SECURITY.md](SECURITY.md)). (Starter theme packs are still being hand-produced; the shipped `ocean-depths` pack demonstrates the format.)
 
 ---
 
@@ -42,8 +42,9 @@
 
 ```bash
 git clone https://github.com/<you>/roomscape
-cd roomscape/docker
-cp ../.env.example .env       # add your HA_URL + HA_TOKEN (and MA_TOKEN if using Music Assistant)
+cd roomscape
+cp .env.example .env          # add your HA_URL + HA_TOKEN (and MA_TOKEN if using Music Assistant)
+cd docker
 docker compose up -d
 # open http://<server>:8090
 ```

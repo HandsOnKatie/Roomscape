@@ -1,5 +1,8 @@
 /* ===================================================================
-   conductor-lib/zip.js  v1.0  (RS-THEME-ZIP, community v0.32)
+   conductor-lib/zip.js  v1.1  (RS-THEME-ZIP, community v1.01)
+   v1.1 (RS-SEC v1.01, F10): the uncompressed-size budget is now checked
+        BEFORE inflating, and inflateRawSync gets the REMAINING budget as
+        maxOutputLength instead of the full 200 MB per entry.
    Minimal ZIP reader/writer for theme-pack export/import.
    PURE module: no ctx, no fs, node builtins (zlib) ONLY — the zero-npm-deps
    rule is absolute here. Operates on Buffers; callers own every path /
@@ -147,8 +150,16 @@ function readZip(buf) {
       throw new Error('unsafe entry path: ' + JSON.stringify(rawName));
     if (isDir) continue;                                // directory marker — no data
 
+    /* RS-SEC v1.01 (F10): budget FIRST, allocate second. The old order added
+       usize to the running total and then handed inflateRawSync the WHOLE
+       MAX_TOTAL as maxOutputLength, so a 200 MB entry was fully decompressed
+       into memory before the "too big" check could fire — and each subsequent
+       entry got the full budget again regardless of what had already been
+       spent. Now: reject on the declared size before touching zlib, and cap
+       the inflate at whatever budget actually remains. */
+    const remaining = MAX_TOTAL - total;
+    if (usize > remaining) throw new Error('total uncompressed size exceeds ' + (MAX_TOTAL / 1024 / 1024) + ' MB (entry ' + name + ' declares ' + usize + ' with ' + remaining + ' left)');
     total += usize;
-    if (total > MAX_TOTAL) throw new Error('total uncompressed size exceeds ' + (MAX_TOTAL / 1024 / 1024) + ' MB');
 
     // local header: its name/extra lengths can differ from the central copy — use them for the data offset
     if (lhOff + 30 > buf.length || buf.readUInt32LE(lhOff) !== 0x04034b50) throw new Error('bad local header: ' + name);
@@ -158,7 +169,9 @@ function readZip(buf) {
     let data;
     if (method === 0) data = Buffer.from(comp);
     else if (method === 8) {
-      try { data = zlib.inflateRawSync(comp, { maxOutputLength: MAX_TOTAL }); }
+      // maxOutputLength = the remaining budget + 1 so an entry that lies about
+      // usize and inflates larger is aborted by zlib, not buffered (F10).
+      try { data = zlib.inflateRawSync(comp, { maxOutputLength: Math.min(remaining, usize) + 1 }); }
       catch (e) { throw new Error('inflate failed for ' + name + ': ' + (e && e.message)); }
     } else throw new Error('unsupported compression method ' + method + ': ' + name);
     if (data.length !== usize) throw new Error('size mismatch for ' + name + ' (' + data.length + ' != ' + usize + ')');

@@ -1,6 +1,22 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v5.00 (community release v1.00)
+   Roomscape — Conductor backend  v5.01 (community release v1.01)
+   v5.01: RS-SEC v1.01 — security fix pass over the two pre-release penetration
+          audits (nothing had ever been deployed publicly). Static web root is
+          now an explicit allow-list (was: any file under APP_DIR, which leaked
+          .env / data/admin-token / profiles.json / _backups under Docker);
+          inbound WebSocket state pushes require the admin token on the upgrade
+          URL and cross-origin upgrades are refused; mutating GET routes
+          (/api/game, /api/mode, /api/panic, /api/kid, /api/rescan,
+          /api/warmthumbs) are token-gated so <img src=…> can no longer drive
+          the room; auth.tagOpen defaults to FALSE and the exemption is an exact
+          path shape; every deep-merge skips __proto__/constructor/prototype;
+          media/theme/photo paths are symlink-checked; layout.walls & friends
+          REPLACE instead of merging; a corrupt config.json is refused rather
+          than overwritten; the profiles wipe-block reports failure instead of
+          lying; zip entries are budget-checked before inflating; the mode-music
+          gate accepts MA_URL from the environment; frame ids are validated; the
+          HA client bounds its response and its total time. See CHANGELOG 1.01.
    v5.00: v1.00 release — admin-token auth, first-run wizard endpoints, theme
           packs, N-frame layouts + roles, config.json, starter sounds. Major
           bump marks the completed community-release architecture.
@@ -44,7 +60,7 @@
    - REST API (HA NFC tap) + optional MQTT bridge
    Full version history lives in CHANGELOG.md.
    Run:   node conductor.js
-   Env:   PORT, APP_DIR, MEDIA_DIR, MQTT_URL, MQTT_PREFIX, STATE_FILE, PROFILES_FILE,
+   Env:   PORT, APP_DIR, DATA_DIR, MEDIA_DIR, MQTT_URL, MQTT_PREFIX, STATE_FILE, PROFILES_FILE,
           HA_URL (e.g. http://homeassistant.local:8123), HA_TOKEN (long-lived access token),
           MA_URL (Music Assistant server), MA_TOKEN (MA long-lived token)
    =================================================================== */
@@ -64,6 +80,11 @@ const OVERLAY_DIR = process.env.OVERLAY_DIR || path.join(APP_DIR, 'overlays');
 const THEMES_DIR = process.env.THEMES_DIR || path.join(APP_DIR, 'themes');   // RS-THEMES v1: community theme packs (one folder = one pack)
 const BACKUP_DIR = path.join(APP_DIR, '_backups');
 const THUMB_DIR = path.join(APP_DIR, '.thumbs');
+/* RS-SEC v1.01 (F1b): writable runtime data (admin-token, and under Docker the
+   state/profiles stores). Defaults to APP_DIR/data for bare-Node installs;
+   docker/compose.yaml sets DATA_DIR=/app/data — OUTSIDE the web root — so the
+   token file can never sit under a directory the HTTP server can reach. */
+const DATA_DIR = process.env.DATA_DIR || path.join(APP_DIR, 'data');
 let thumbLib = null, thumbKind = 'none';                    // optional: npm i sharp  (or jimp)
 try { thumbLib = require('sharp'); thumbKind = 'sharp'; } catch (e) {}
 if (!thumbLib) { try { thumbLib = require('jimp'); thumbKind = 'jimp'; } catch (e) {} }
@@ -202,6 +223,12 @@ function redactSettings(s){ try{ var c = JSON.parse(JSON.stringify(s||{})); if (
    profile.moments = [{ id, label, icon, sfx, event, lights }] — extra Social-row
    buttons offered in Play while this mode is live. */
 let activePhaseId = null;
+/* RS-SEC v1.01 (F5): every recursive merge in this codebase walks keys that
+   ultimately come from user/network JSON. '__proto__' / 'constructor' /
+   'prototype' are skipped so a merge can never write through to
+   Object.prototype (process-global pollution). Shared by mergePatch here,
+   mergeMap in the mediafx block, and deepMerge in the /api/config handler. */
+function rsSafeKey(k) { return k !== '__proto__' && k !== 'constructor' && k !== 'prototype'; }
 function mergePatch(base, patch) {
   if (patch == null) return base;
   if (Array.isArray(base) && patch && typeof patch === 'object' && !Array.isArray(patch)) {
@@ -213,6 +240,7 @@ function mergePatch(base, patch) {
   if (base && typeof base === 'object' && typeof patch === 'object') {
     const out = Object.assign({}, base);
     Object.keys(patch).forEach((k) => {
+      if (!rsSafeKey(k)) return;   // RS-SEC v1.01 (F5)
       out[k] = (patch[k] && typeof patch[k] === 'object' && base[k] && typeof base[k] === 'object')
         ? mergePatch(base[k], patch[k]) : patch[k];
     });
@@ -259,7 +287,11 @@ function defaultState() {
 function acceptState(incoming) {
   const base = defaultState();
   const prev = state || base;
-  const next = Object.assign({}, base, incoming);
+  /* RS-SEC v1.01 (F5): key-by-key instead of Object.assign — Object.assign uses
+     [[Set]], so an incoming '__proto__' key (own property when it arrives via
+     JSON.parse) would re-parent the state object. */
+  const next = Object.assign({}, base);
+  Object.keys(incoming || {}).forEach((k) => { if (rsSafeKey(k)) next[k] = incoming[k]; });
   ['zones', 'channels', 'mutes'].forEach((k) => { if (!next[k] || typeof next[k] !== 'object') next[k] = prev[k] || base[k]; });
   ['frames', 'frameImages', 'overlayImages'].forEach((k) => { if (!Array.isArray(next[k])) next[k] = prev[k] || base[k]; });
   ['rooms', 'timer', 'scores'].forEach((k) => { if (incoming[k] === undefined && prev[k] !== undefined) next[k] = prev[k]; });
@@ -585,6 +617,16 @@ function handleClientMessage(client, text) {
   if (!d || !d.ie) return;
   if (d.type === 'hello') { if (d.frame) client.frame = d.frame; wsSend(client.sock, { ie: true, type: 'state', state: state, t: Date.now() }); }   // v1.4: frames identify themselves
   else if (d.type === 'state' && d.state) {
+    /* RS-SEC v1.01 (F2a): inbound state is a full room-state MUTATION — it
+       persists, rebroadcasts to every wall, and drives Home Assistant. It used
+       to be accepted from ANY socket with no token and no origin check, so any
+       web page open on the LAN could take over the room. Sockets now only get
+       this right by presenting the admin token on the upgrade URL (?token=).
+       Frames are pure consumers and never need it. */
+    if (!client.canMutate) {
+      if (!client._mutWarned) { client._mutWarned = 1; console.log('[ws] REFUSED state push from a tokenless socket' + (client.frame ? ' (' + client.frame + ')' : '') + ' — reconnect with ?token=<admin token> to publish state'); }
+      return;
+    }
     const prev = state.game + '|' + state.mode;
     state = acceptState(d.state); resolveFrameImages(state); resolveOverlays(state); state.chroma = settings.chroma;   // v2.51: defensive merge
     const now = state.game + '|' + state.mode;
@@ -646,7 +688,18 @@ function corsOrigin(req) {
   if (!o) return null;
   return (Array.isArray(c) ? c : [c]).indexOf(o) >= 0 ? o : null;
 }
-function corsHdr(req, h) { var o = corsOrigin(req); if (o) { h['Access-Control-Allow-Origin'] = o; if (o !== '*') h['Vary'] = 'Origin'; } return h; }
+/* RS-SEC v1.01 (F14): Vary: Origin is emitted whenever an allow-LIST is
+   configured, not only on the requests that happen to match it. Without it a
+   shared cache (or the browser's own) can store the no-ACAO response for an
+   allowed origin, or vice versa — the response genuinely varies by Origin the
+   moment the policy is origin-dependent. '*' and "no cors configured" are
+   origin-independent, so they still need no Vary. */
+function corsHdr(req, h) {
+  var c = CONFIG.cors, o = corsOrigin(req);
+  if (o) h['Access-Control-Allow-Origin'] = o;
+  if (c && c !== '*') h['Vary'] = h['Vary'] ? (h['Vary'] + ', Origin') : 'Origin';
+  return h;
+}
 
 const ctx = {
   // config values (stable consts)
@@ -663,6 +716,13 @@ const ctx = {
   overlayList: () => overlayList,
   thumbLib: () => thumbLib,                  // npm sharp/jimp instance — required HERE, injected into the lib
   thumbKind: () => thumbKind,
+  /* RS-SEC v1.01 (F2): the WS layer needs the admin token to decide whether a
+     socket may push state. The RS-AUTH block is appended LAST (it resolves the
+     token there) and publishes it as global.__rsAdminToken; read at call time,
+     which is always after boot. authDisabled mirrors the HTTP gate's
+     CONFIG.auth.enabled:false kill-switch. */
+  adminToken: () => String(global.__rsAdminToken || ''),
+  authDisabled: () => !!(CONFIG && CONFIG.auth && CONFIG.auth.enabled === false),
   // core callbacks — routed through ctx at call time so later patches to core apply
   handleClientMessage: (client, text) => handleClientMessage(client, text)
 };
@@ -932,7 +992,39 @@ function haApplyRoom() {                                  // mode/game changes d
 /* -------------------- HTTP (media + static + REST) -------------------- */
 /* v3.62: MIME + serveFile moved to conductor-lib/media.js (imported above) */
 function sendJSON(res, code, obj) { const b = Buffer.from(JSON.stringify(obj)); res.writeHead(code, corsHdr(res.req, { 'Content-Type': 'application/json', 'Content-Length': b.length })); res.end(b); }   /* RS-AUTH v1: CORS via corsHdr */
-function readBody(req, cb) { let s = ''; req.on('data', (c) => { s += c; if (s.length > 2e6) req.destroy(); }); req.on('end', () => { let j = null; try { j = JSON.parse(s || '{}'); } catch (e) {} cb(j); }); }
+/* RS-SEC v1.01 (F14): an oversize body used to be answered with a bare
+   req.destroy() — which means 'end' never fires, cb is never called, and the
+   client sits waiting on a response that will never come until it times out.
+   Say 413 and hang up properly. */
+function readBody(req, cb) {
+  let s = '', over = false;
+  req.on('data', (c) => {
+    if (over) return;
+    s += c;
+    if (s.length > 2e6) {
+      over = true; s = '';                       // free the buffer immediately
+      try {
+        /* req._rsRes is stamped by the RS-AUTH gate (the single 'request'
+           listener, so it sees every request); socket._httpMessage is the
+           fallback if that block ever fails to install. */
+        const r = req._rsRes || (req.socket && req.socket._httpMessage);
+        if (r && !r.headersSent) {
+          r.writeHead(413, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Connection': 'close' }));
+          r.end(JSON.stringify({ ok: false, error: 'request body exceeds the 2 MB limit' }));
+        }
+      } catch (e) {}
+      /* Deliberately NOT req.destroy() here: resetting the socket while the
+         client is still uploading throws away the 413 we just wrote (the peer
+         sees ECONNRESET instead of an answer). Further chunks are discarded by
+         the `over` guard above, so nothing accumulates; the socket is torn down
+         on a short leash if the client keeps talking. */
+      const kill = setTimeout(() => { try { req.destroy(); } catch (e) {} }, 3000);
+      if (kill.unref) kill.unref();
+    }
+  });
+  req.on('error', () => {});
+  req.on('end', () => { if (over) return; let j = null; try { j = JSON.parse(s || '{}'); } catch (e) {} cb(j); });
+}
 /* v3.62: listPhotos/photoSafe moved to conductor-lib/media.js (imported
    above). photoAlbums + its cache stay here (only core + v262 use them). */
 let _albCache = { t: 0, v: null };
@@ -960,6 +1052,42 @@ function photoAlbums() {   // every folder (to depth 3) that contains photos; id
    moved to conductor-lib/media.js (imported above). */
 
 const HAS_APP = fs.existsSync(path.join(APP_DIR, 'app.html'));   // v1.4: Play & Design app at /
+
+/* ================= RS-SEC v1.01 · F1: static allow-list =================
+   The static fallback at the bottom of coreHandler used to serve ANY file
+   under APP_DIR after a lexical containment check. Under Docker APP_DIR IS
+   the repo root (compose mounts `..:/app/web`), so that leaked, verbatim:
+     GET /.env              -> HA_TOKEN / MA_TOKEN
+     GET /data/admin-token  -> the admin token itself (auth bypass)
+     GET /profiles.json     -> the raw store, bypassing redactSettings()
+     GET /config.json, /_backups/*.bak, /docs/*, /scripts/*, /docker/* ...
+   Containment was never the hole — "everything inside the root is public" was.
+   So the fallback now serves an EXPLICIT ALLOW-LIST and nothing else:
+     - a fixed set of page/asset files at the web root (the files app.html and
+       frame.html actually load), and
+     - files under the served-by-design asset dirs below, with a safe extension.
+   Any path segment starting '.' is denied outright (.env, .git, .thumbs, and
+   dot-dot for good measure). Media, sounds, decks, photos, overlays and
+   thumbnails keep their own dedicated, containment-checked routes further up;
+   nothing else under the repo root is reachable over HTTP. */
+const STATIC_PAGES = new Set([
+  '/app.html', '/app.js', '/engine.js', '/fx.js', '/fx-audio.js',
+  '/frame.html', '/scores.html',
+  '/control.html', '/editor.html',           // legacy standalone pages (served if present)
+  '/favicon.ico', '/robots.txt'
+]);
+const STATIC_DIRS = ['/app/', '/people/'];   // app/ = future split assets · people/ = score-card portraits written by POST /api/people/photo
+const STATIC_EXT_RE = /\.(html|js|css|png|jpe?g|gif|svg|ico|webp|woff2?|map)$/i;
+function staticAllowed(rel) {
+  if (typeof rel !== 'string' || rel.charAt(0) !== '/') return false;
+  if (rel.indexOf('\0') >= 0 || rel.indexOf('\\') >= 0) return false;
+  const segs = rel.split('/');
+  for (let i = 1; i < segs.length; i++) if (!segs[i] || segs[i].charAt(0) === '.') return false;   // no empty + no dot segments
+  if (STATIC_PAGES.has(rel)) return true;
+  for (const d of STATIC_DIRS) if (rel.indexOf(d) === 0 && rel.length > d.length && STATIC_EXT_RE.test(rel)) return true;
+  return false;
+}
+
 // v2.51: the core handler finally gets the try/catch every appended patch block
 // already had. Before this, a malformed escape (GET /% or /media/%E0%A4) threw
 // URIError from decodeURIComponent synchronously — pre-harden a process crash,
@@ -1037,7 +1165,7 @@ function coreHandler(req, res) {
   }
 
   if (p.startsWith('/api/')) {
-    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.00', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
+    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.01', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
     if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST });   // v2.62: wall shape, single source of truth · RS-CONFIG v1: roles/orientation/atRest
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, state);
     if (p === '/api/scenes') return sendJSON(res, 200, { count: Object.keys(landIndex).length, thumbs: thumbKind, scenes: Object.keys(landIndex).sort().map(function (k) { const l = landIndex[k]; const e = encodeURIComponent(l[0]); const d = path.dirname(l[0]).replace(/\\/g, '/'); const dm = (global.__rsDims || {})[l[0]]; const ori = (dm && dm.w && dm.h) ? (dm.w > dm.h ? 'l' : (dm.h > dm.w ? 'p' : 's')) : null; return { key: k, count: l.length, dir: (d === '.' ? '' : d), ori: ori, sample: '/media/' + e, thumb: '/thumb/' + encodeURIComponent(path.basename(l[0])) + '?src=media&w=320&p=' + e, video: VID_RE.test(l[0]) }; }) });   // v2.40 dir = folder path; v2.41 ori = p|l|s from RS-SCENE-DIMS (null while unprobed / video)
@@ -1446,8 +1574,10 @@ function coreHandler(req, res) {
   }
 
   let rel = decodeURIComponent(p); if (rel === '/') rel = HAS_APP ? '/app.html' : '/control.html'; if (rel === '/frame') rel = '/frame.html';
+  /* RS-SEC v1.01 (F1): allow-list, not "anything inside APP_DIR" — see STATIC_PAGES above. */
+  if (!staticAllowed(rel)) { res.writeHead(404, corsHdr(req, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })); res.end('Not found'); return; }
   const file = path.join(APP_DIR, path.normalize(rel).replace(/^(\.\.[\/\\])+/, ''));
-  if (!file.startsWith(APP_DIR)) { res.writeHead(403); res.end('forbidden'); return; }
+  if (!file.startsWith(APP_DIR + path.sep)) { res.writeHead(403); res.end('forbidden'); return; }
   serveFile(res, file, false);
 }
 server.on('upgrade', (req, sock) => handleUpgrade(req, sock));
@@ -1458,7 +1588,7 @@ resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chrom
 setTimeout(directorOnModeChange, 2000);   // v1.2: start the current mode's audio director after boot
 server.listen(PORT, () => {
   console.log('====================================================');
-  console.log('  Roomscape Conductor  v4.74 (community v0.50)');
+  console.log('  Roomscape Conductor  v5.01 (community v1.01)');   /* RS-SEC v1.01 (F14): the banner had been left at v4.74/v0.50 */
   console.log('  modules : ' + LIB_MODULES.join(', ') + '  (conductor-lib @ ' + LIB_DIR + ')');
   console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — app.html missing, serving control.html') + ')');
   console.log('  app   : ' + APP_DIR);
@@ -1477,7 +1607,11 @@ server.listen(PORT, () => {
 let mmLastGame = null;
 function modeMusicFollow() {
   const mu = settings.music || {};
-  if (mu.modeFollow === false || !mu.url || !mu.player) return;
+  /* RS-SEC v1.01 (F11): the gate demanded settings.music.url, but music.js
+     prefers process.env.MA_URL over it — so the documented "put MA_URL in
+     .env" setup left settings.music.url empty and mode music silently never
+     played. Accept either source, exactly like maCall does. */
+  if (mu.modeFollow === false || !(process.env.MA_URL || mu.url) || !mu.player) return;
   const g = state.game;
   if (!g || g.charAt(0) === '_') return;
   if (g === mmLastGame) return;
@@ -1495,8 +1629,15 @@ function modeMusicFollow() {
        Exact match failed -> case-insensitive substring match (every query term
        present in the playlist name); still nothing -> log + skip, no error. */
     if (!pl) {
+      /* RS-SEC v1.01 (C7): terms shorter than 3 characters match almost every
+         playlist name ("a", "of", "80s" is fine but "a" is not), so a sloppy
+         theme-pack query used to start playing something arbitrary. Require
+         every term to be >= 3 chars before the substring fallback is allowed
+         to run at all. */
       const terms = label.toLowerCase().split(/\s+/).filter(Boolean);
-      if (terms.length) pl = items.find((x) => { const n = ((x && x.name) || '').toLowerCase(); return terms.every((t) => n.indexOf(t) >= 0); });
+      const usable = terms.length && terms.every((t) => t.length >= 3);
+      if (usable) pl = items.find((x) => { const n = ((x && x.name) || '').toLowerCase(); return terms.every((t) => n.indexOf(t) >= 0); });
+      else if (terms.length) logDiary('music', 'mode music: query "' + label + '" has a term under 3 characters — substring fallback skipped');
     }
     if (!pl) { logDiary('music', 'mode music: no MA playlist matching "' + label + '"'); return; }
   maCall('player_queues/shuffle', { queue_id: mu.player, shuffle_enabled: true }, function () {}); // rs-music-shuffle v1
@@ -2022,10 +2163,13 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     }
     function gamesOf(d) { return (d && (d.games || d.rules || d)) || {}; }
     function readBody(req, cb) {
+      /* RS-SEC v1.01 (F14): report the overflow from the 'data' handler —
+         req.destroy() means 'end' never fires, so the old cb('too large')
+         there was unreachable and the request hung. */
       var b = '', big = false;
-      req.on('data', function (c) { b += c; if (b.length > 4 * 1024 * 1024) { big = true; req.destroy(); } });
-      req.on('end', function () { if (big) return cb('too large'); try { cb(null, b ? JSON.parse(b) : {}); } catch (e) { cb('bad json'); } });
-      req.on('error', function (e) { cb(String((e && e.message) || e)); });
+      req.on('data', function (c) { if (big) return; b += c; if (b.length > 4 * 1024 * 1024) { big = true; try { req.destroy(); } catch (e) {} return cb('too large'); } });
+      req.on('end', function () { if (big) return; try { cb(null, b ? JSON.parse(b) : {}); } catch (e) { cb('bad json'); } });
+      req.on('error', function (e) { if (big) return; cb(String((e && e.message) || e)); });
     }
 
     if (typeof server === 'undefined' || !server || !server.prependListener) {
@@ -2270,8 +2414,9 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     var wt=null;
     function persistFx(){ clearTimeout(wt); wt=setTimeout(function(){ try{ fs.writeFileSync(FILE, JSON.stringify(DB), 'utf8'); }catch(e){ console.error('[mediafx] write failed:', e && e.message); } }, 150); }
     function log(m){ try{ console.log('[mediafx] '+m); }catch(e){} }
-    function readBody(req, cb){ var b='',big=false; req.on('data',function(c){ b+=c; if(b.length>4*1024*1024){big=true;req.destroy();} }); req.on('end',function(){ if(big)return cb('too large'); try{ cb(null, b?JSON.parse(b):{}); }catch(e){ cb('bad json'); } }); req.on('error',function(e){ cb(String(e&&e.message||e)); }); }
-    function mergeMap(dst, src){ var n=0; if(src && typeof src==='object'){ Object.keys(src).forEach(function(k){ var v=src[k]; if(v==null){ if(k in dst){ delete dst[k]; n++; } } else if(typeof v==='object'){ dst[k]=v; n++; } }); } return n; }
+    /* RS-SEC v1.01 (F14): overflow answered from 'data' — 'end' never fires after req.destroy(). */
+    function readBody(req, cb){ var b='',big=false; req.on('data',function(c){ if(big)return; b+=c; if(b.length>4*1024*1024){big=true; try{req.destroy();}catch(e){} return cb('too large');} }); req.on('end',function(){ if(big)return; try{ cb(null, b?JSON.parse(b):{}); }catch(e){ cb('bad json'); } }); req.on('error',function(e){ if(big)return; cb(String(e&&e.message||e)); }); }
+    function mergeMap(dst, src){ var n=0; if(src && typeof src==='object'){ Object.keys(src).forEach(function(k){ if(!rsSafeKey(k)) return; /* RS-SEC v1.01 (F5) */ var v=src[k]; if(v==null){ if(Object.prototype.hasOwnProperty.call(dst,k)){ delete dst[k]; n++; } } else if(typeof v==='object'){ dst[k]=v; n++; } }); } return n; }
 
     var R = global.__rsRouter; if (!R){ log('router missing — skipped'); return; }
     R.add('ALL', '/api/mediafx', function(req, res, u, real){
@@ -3868,10 +4013,19 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             stats.wipesBlocked++;
             console.error('[harden] CRITICAL: blocked a profiles write that would shrink ' + oldN + ' modes to ' + newN + ' — copy of the refused payload in _backups/refused/');
             try { fs.mkdirSync(path.join(BDIR, 'refused'), { recursive: true }); origWrite(path.join(BDIR, 'refused', 'profiles-refused-' + Date.now() + '.json'), data); } catch (e) {}
-            return;
+            /* RS-SEC v1.01 (F9): THROW, don't return. A silent return let the
+               caller (POST /api/profiles) believe the write succeeded — it
+               answered ok:true while the in-memory map had already been
+               replaced and the disk still held the old modes. Divergence
+               between memory and disk is exactly the state this guard exists
+               to prevent, so surface it: the route's try/catch turns this into
+               500 {ok:false,error:'write failed: …'} and the app shows it. */
+            var wipeErr = new Error('profiles write refused by the wipe-block guard: would shrink ' + oldN + ' modes to ' + newN + ' (refused payload saved in _backups/refused/)');
+            wipeErr.code = 'RS_WIPE_BLOCKED';
+            throw wipeErr;
           }
         }
-      } catch (e) {}
+      } catch (e) { if (e && e.code === 'RS_WIPE_BLOCKED') throw e; }   // RS-SEC v1.01 (F9): the guard's own refusal must escape this catch
       var tmp = file + '.tmp-' + process.pid;
       try {
         origWrite(tmp, data, opts);
@@ -5330,7 +5484,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
   try {
     if (typeof server === 'undefined' || !server || !server.listeners) { console.error('[auth] no server — gate inactive'); return; }
     var TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
-    var TOK_FILE = path.join(APP_DIR, 'data', 'admin-token');
+    var TOK_FILE = path.join(DATA_DIR, 'admin-token');   // RS-SEC v1.01 (F1b): DATA_DIR (env) — outside the web root under Docker
     if (!TOKEN) { try { TOKEN = String(fs.readFileSync(TOK_FILE, 'utf8')).trim(); } catch (e) {} }
     if (!TOKEN) {
       TOKEN = require('crypto').randomBytes(24).toString('base64url');
@@ -5340,31 +5494,61 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       } catch (e) { console.error('[auth] could not write ' + TOK_FILE + ': ' + (e && e.message)); }
       console.log('[auth] admin token (first run): ' + TOKEN + ' — keep it; also in data/admin-token');
     }
+    global.__rsAdminToken = TOKEN;   // RS-SEC v1.01 (F2): the WS layer reads this to decide upgrade mutation rights
     function authCfg() { return (CONFIG && CONFIG.auth) || {}; }
     function sentToken(req, u) {
       var h = req.headers && req.headers['x-rs-token'];
       if (h) return String(Array.isArray(h) ? h[0] : h).trim();
       try { return String(u.searchParams.get('token') || '').trim(); } catch (e) { return ''; }
     }
+    /* RS-SEC v1.01 (F14): constant-time compare. `sent === TOKEN` short-circuits
+       on the first differing byte — remotely noisy but measurable, and there is
+       no rate limit here. Length is compared first (timingSafeEqual throws on a
+       length mismatch, and the length isn't the secret). */
+    var TOKBUF = Buffer.from(TOKEN);
+    function tokenOk(req, u) {
+      var sent = sentToken(req, u);
+      if (!sent || sent.length !== TOKEN.length) return false;
+      try { return require('crypto').timingSafeEqual(Buffer.from(sent), TOKBUF); } catch (e) { return false; }
+    }
+    /* RS-SEC v1.01 (F3): handlers that MUTATE but answer GET/HEAD. Each of these
+       is a one-line <img src="http://conductor:8090/api/panic"> away from being
+       triggered by any page the household opens — classic CSRF, no token, no
+       preflight, no CORS to stop it (the browser still sends the request even
+       though it can't read the reply). The handlers themselves are left alone;
+       the gate simply demands the token on these paths whatever the verb. */
+    var MUTATING_GET = [
+      /^\/api\/game\//,        // applyProfile — takes over the whole room
+      /^\/api\/mode\//,        // setMode
+      /^\/api\/panic$/,        // back to at-rest (also ends any running party game / intro)
+      /^\/api\/kid$/,          // kid-safe toggle
+      /^\/api\/rescan$/,       // full media + overlay rescan (expensive)
+      /^\/api\/warmthumbs$/    // kicks off background thumbnail generation (expensive)
+    ];
+    /* RS-SEC v1.01 (F4): the tag exemption is now an EXACT shape, not a prefix.
+       `/api/tag/` as a prefix exempted anything that merely started with it. */
+    var TAG_RE = /^\/api\/tag\/[A-Za-z0-9_:-]+$/;
     function allowed(req) {
       var cfg = authCfg();
       if (cfg.enabled === false) return true;
       var m = String(req.method || 'GET').toUpperCase();
       var u; try { u = new URL(req.url || '/', 'http://x'); } catch (e) { return false; }
       var p = u.pathname;
-      var tagOpen = cfg.tagOpen !== false;
-      var isTag = p.indexOf('/api/tag/') === 0;
-      if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') {
-        if (p === '/api/ha/entities') return sentToken(req, u) === TOKEN;   // the one gated GET
-        if (isTag && !tagOpen) return sentToken(req, u) === TOKEN;
+      if (m === 'OPTIONS') return true;                                  // CORS preflight carries no credentials
+      var tagOpen = cfg.tagOpen === true;                                // RS-SEC v1.01 (F4): DEFAULT IS NOW CLOSED
+      var isTagPath = p.indexOf('/api/tag/') === 0;
+      if (isTagPath) return (tagOpen && TAG_RE.test(p)) || tokenOk(req, u);
+      if (m === 'GET' || m === 'HEAD') {
+        if (p === '/api/ha/entities') return tokenOk(req, u);            // the one always-gated read
+        for (var i = 0; i < MUTATING_GET.length; i++) if (MUTATING_GET[i].test(p)) return tokenOk(req, u);
         return true;
       }
-      if (isTag && tagOpen) return true;
-      return sentToken(req, u) === TOKEN;
+      return tokenOk(req, u);
     }
     var chain = server.listeners('request').slice();
     server.removeAllListeners('request');
     server.on('request', function (req, res) {
+      req._rsRes = res;   // RS-SEC v1.01 (F14): readBody needs a response to answer 413 on; this is the one listener every request passes through
       if (allowed(req)) { for (var i = 0; i < chain.length; i++) chain[i].call(server, req, res); return; }
       try {
         res.writeHead(401, corsHdr(req, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }));
@@ -5372,10 +5556,11 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       } catch (e) {}
       try { req.resume(); } catch (e) {}   // drain any body so the socket closes cleanly
     });
-    console.log('[auth] RS-AUTH v1 active — mutations need x-rs-token ('
-      + (process.env.ADMIN_TOKEN ? 'env ADMIN_TOKEN' : 'data/admin-token') + ')'
+    console.log('[auth] RS-AUTH v1.1 active — mutations need x-rs-token ('
+      + (process.env.ADMIN_TOKEN ? 'env ADMIN_TOKEN' : TOK_FILE) + ')'
       + (authCfg().enabled === false ? ' [DISABLED — config auth.enabled:false]' : '')
-      + (authCfg().tagOpen === false ? ' [tag route closed]' : ' [tag route open]')
+      + (authCfg().tagOpen === true ? ' [tag route OPEN — auth.tagOpen:true]' : ' [tag route closed]')
+      + ' · mutating GETs gated: ' + MUTATING_GET.length
       + ' · chain: ' + chain.length + ' listener(s) wrapped');
   } catch (e) { try { console.error('[auth] init failed:', e && e.message); } catch (x) {} }
 })();
@@ -5421,13 +5606,69 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     });
 
     var CFG_KEYS = ['atRestMode', 'layout', 'ha', 'rooms', 'edges', 'cors', 'auth'];
-    function deepMerge(dst, src) {
+    /* RS-SEC v1.01 (F7): keys whose value is a COMPLETE SET, not a patch. Merging
+       them meant the wizard could only ever ADD: POST {layout:{walls:{A:['A1']}}}
+       against a 6-frame layout produced SEVEN frames instead of one. Every key
+       here is replaced wholesale when the patch mentions it. Dotted paths are
+       matched against the merge cursor's path. */
+    var CFG_REPLACE = ['layout.walls', 'layout.roles', 'ha.tvs', 'ha.lightZones', 'ha.tvQuirks', 'rooms', 'edges'];
+    /* RS-SEC v1.01 (F5): a JSON body's keys are attacker-chosen. Assigning
+       dst['__proto__'] = {...} during a recursive merge writes through to
+       Object.prototype, which is process-global: the proved exploit was
+       POST /api/config {"ha":{"__proto__":{"enabled":false}}} making
+       CONFIG.auth.enabled read as false for every subsequent request — the
+       auth gate switched off without touching config.json.
+       (NB: written as explicit comparisons — `{__proto__:1}` in an object
+       literal sets the literal's prototype instead of an own property, so a
+       lookup table would silently not contain the key that matters.) */
+    var safeKey = rsSafeKey;
+    function deepMerge(dst, src, at) {
+      at = at || '';
       Object.keys(src).forEach(function (k) {
+        if (!safeKey(k)) return;                                    // F5
+        var pathKey = at ? at + '.' + k : k;
         var sv = src[k];
-        if (sv && typeof sv === 'object' && !Array.isArray(sv) && dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) deepMerge(dst[k], sv);
+        if (CFG_REPLACE.indexOf(pathKey) >= 0) { dst[k] = sv; return; }   // F7: replace, never merge
+        if (sv && typeof sv === 'object' && !Array.isArray(sv) && dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) deepMerge(dst[k], sv, pathKey);
         else dst[k] = sv;                 // arrays + scalars replace, objects merge
       });
       return dst;
+    }
+    /* RS-SEC v1.01 (F12): frame ids end up as object keys, DOM ids, URL query
+       values (/frame.html?frame=…) and WS routing keys. Vet them here — a
+       wizard typo or a hostile POST could otherwise install a frame called
+       "<script>" or two frames called "L1". */
+    var FRAME_ID_RE = /^[A-Za-z0-9_-]{1,24}$/;
+    function checkWalls(walls) {
+      if (!walls || typeof walls !== 'object' || Array.isArray(walls)) return 'layout.walls must be an object of wall -> [frame ids]';
+      var names = Object.keys(walls);
+      if (!names.length) return 'layout.walls is empty — a layout needs at least one wall with at least one frame';
+      var seen = {}, total = 0;
+      for (var i = 0; i < names.length; i++) {
+        var w = names[i], arr = walls[w];
+        if (!safeKey(w)) return 'illegal wall name ' + JSON.stringify(w);
+        if (!FRAME_ID_RE.test(w)) return 'illegal wall name ' + JSON.stringify(w) + ' (allowed: A-Z a-z 0-9 _ - , 1-24 chars)';
+        if (!Array.isArray(arr)) return 'wall ' + JSON.stringify(w) + ' must be an array of frame ids';
+        for (var j = 0; j < arr.length; j++) {
+          var f = arr[j];
+          if (typeof f !== 'string' || !FRAME_ID_RE.test(f)) return 'illegal frame id ' + JSON.stringify(f) + ' on wall ' + JSON.stringify(w) + ' (allowed: A-Z a-z 0-9 _ - , 1-24 chars)';
+          if (Object.prototype.hasOwnProperty.call(seen, f)) return 'duplicate frame id ' + JSON.stringify(f) + ' (already on wall ' + JSON.stringify(seen[f]) + ')';
+          seen[f] = w; total++;
+        }
+      }
+      if (!total) return 'layout.walls has no frames — a layout needs at least one';
+      return null;
+    }
+    /* RS-SEC v1.01 (F14): every /api/config write leaves a timestamped .bak.
+       A wizard session writes one per step, so an install accumulated them
+       forever. Keep the ten newest; the rest are deleted (they are copies of a
+       file that is itself still on disk). */
+    function rotateCfgBaks(file) {
+      try {
+        var dir = path.dirname(file), base = path.basename(file) + '.';
+        var baks = fs.readdirSync(dir).filter(function (f) { return f.indexOf(base) === 0 && /\.bak$/.test(f); }).sort();
+        while (baks.length > 10) { try { fs.unlinkSync(path.join(dir, baks.shift())); } catch (e) {} }
+      } catch (e) {}
     }
     /* Mirrors the boot-time LAYOUT IIFE (top of file) — same walls fallback,
        same derived roles incl. the "primary = LAST wall's center" rule. Keep
@@ -5460,12 +5701,29 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         var patch = {}, ignored = [];
         Object.keys(b).forEach(function (k) { if (CFG_KEYS.indexOf(k) >= 0) patch[k] = b[k]; else ignored.push(k); });
         if (!Object.keys(patch).length) return real.json(400, { ok: false, error: 'no allowed keys — expected any of: ' + CFG_KEYS.join(', '), ignored: ignored });
+        /* RS-SEC v1.01 (F12): vet frame ids BEFORE anything is written. */
+        if (patch.layout && typeof patch.layout === 'object' && !Array.isArray(patch.layout) && ('walls' in patch.layout)) {
+          var wErr = checkWalls(patch.layout.walls);
+          if (wErr) return real.json(400, { ok: false, error: wErr });
+        }
         var file = process.env.CONFIG_FILE || path.join(APP_DIR, 'config.json');
+        /* RS-SEC v1.01 (F8): a config.json that fails to parse used to be
+           silently treated as {} — the merge then WROTE a file containing only
+           the patch, wiping every setting the user had, and answered ok:true.
+           A syntax error in a hand-edited config is exactly when you least want
+           your settings deleted, so refuse instead. (Absent file is fine: that
+           is a first-run write, not a corrupt one.) */
         var cur = {};
-        try { cur = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (e) { cur = {}; }
+        if (fs.existsSync(file)) {
+          var rawCur = null;
+          try { rawCur = fs.readFileSync(file, 'utf8'); } catch (e) { return real.json(500, { ok: false, error: 'cannot read config.json: ' + (e && e.message) }); }
+          try { cur = JSON.parse(rawCur); } catch (e) { return real.json(500, { ok: false, error: 'config.json is not valid JSON — refusing to overwrite', detail: String(e && e.message).slice(0, 200) }); }
+          if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return real.json(500, { ok: false, error: 'config.json is not valid JSON — refusing to overwrite', detail: 'top level is not an object' });
+        }
         try {
           if (fs.existsSync(file)) fs.copyFileSync(file, file + '.' + new Date().toISOString().replace(/[:.]/g, '-') + '.bak');
         } catch (e) { return real.json(500, { ok: false, error: 'backup failed, refusing to write: ' + (e && e.message) }); }
+        rotateCfgBaks(file);   // RS-SEC v1.01 (F14): keep the last 10
         var merged = deepMerge(cur, JSON.parse(JSON.stringify(patch)));
         try { fs.writeFileSync(file, JSON.stringify(merged, null, 2)); }
         catch (e) { return real.json(500, { ok: false, error: 'write failed: ' + (e && e.message) }); }

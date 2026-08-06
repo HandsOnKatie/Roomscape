@@ -1,13 +1,12 @@
 # Security model — read before deploying
 
-**Version 0.50**
+**Version 1.01**
 
 ## What Roomscape is, security-wise
 
 A trusted-LAN home appliance, like a smart-home hub admin page. It assumes every
-device on your network is yours. Since v0.50 an admin token guards all mutating
-API calls, but the *read* surface (state, media, screens) stays open on the LAN
-by design.
+device on your network is yours. An admin token guards all mutating API calls,
+but the *read* surface (state, media, screens) stays open on the LAN by design.
 
 ## What it must NOT be used for
 
@@ -33,7 +32,9 @@ query string for tools that can't set headers).
 Token source, first match wins:
 
 1. `ADMIN_TOKEN` environment variable (see `.env.example`)
-2. `data/admin-token` (one line, inside the app directory)
+2. `<DATA_DIR>/admin-token` (one line; `DATA_DIR` defaults to `data/` beside
+   the app, and the Docker compose file sets it to `/app/data` — deliberately
+   *outside* the directory served over HTTP)
 3. **generated on first run** — printed once in the boot log
    (`admin token (first run): …`) and written to `data/admin-token`
    (mode 600 attempted; that's a no-op on Windows/SMB filesystems).
@@ -51,19 +52,17 @@ rotate it any time under **⚙ Settings → System → 🔑 Admin token…**.
 ### What's protected
 
 - Every POST: modes, profiles, uploads, theme import, TTS, audio, restart, …
-- `GET /api/ha/entities` — the **one gated GET**: it lists your Home Assistant
+- **Mutating routes that answer GET.** A handful of endpoints change the room but
+  are reachable with a plain GET — which means a page in any browser tab on the
+  LAN could fire one with `<img src="http://conductor:8090/api/panic">`, no
+  JavaScript and no CORS involved. These require the token whatever the verb:
+  `/api/game/*`, `/api/mode/*`, `/api/panic`, `/api/kid`, `/api/rescan`,
+  `/api/warmthumbs`.
+- `GET /api/ha/entities` — the **one gated read**: it lists your Home Assistant
   entity inventory (for the setup wizard), which is worth a token even read-only.
-- `/api/tag/*` when `auth.tagOpen` is `false` — see below.
-
-### What stays open (LAN conveniences, each deliberate)
-
-- **All other GETs** — state, layout, scenes, media, thumbnails, health. Anyone
-  on the LAN can *watch*; they can't *change* anything.
-- **WebSocket connections** (frame kiosks): upgrades carry no token. The frames
-  are read-only consumers of state broadcasts; gating them would break every
-  wall TV on each restart for no mutation-protection gain.
-- **`POST /api/tag/*` by default** — NFC tag taps arrive via Home Assistant's
-  `rest_command`, which predates the token. To close it: add the header in HA —
+- **`/api/tag/*` — gated by default since v1.01.** NFC tag taps arrive via Home
+  Assistant's `rest_command`, so add the header there (see
+  [docs/HA-SETUP.md](docs/HA-SETUP.md)):
 
   ```yaml
   rest_command:
@@ -71,11 +70,29 @@ rotate it any time under **⚙ Settings → System → 🔑 Admin token…**.
       url: "http://<conductor>:8090/api/tag/{{ tag_id }}"
       method: post
       headers:
-        x-rs-token: "<your token>"
+        x-rs-token: !secret roomscape_token
   ```
 
-  — then set `config.json` → `"auth": { "tagOpen": false }`. (The tag route
-  answers GET as well as POST, so `tagOpen: false` gates both verbs.)
+  If your automation platform genuinely cannot send a header, `config.json` →
+  `"auth": { "tagOpen": true }` re-opens the route (exactly-shaped
+  `/api/tag/<id>` paths only). That is the **opt-out**, and it means anyone on
+  the LAN can launch any tagged mode.
+- **WebSocket state pushes.** A socket may only send `{type:"state"}` — the
+  message that replaces the whole room state, persists it, rebroadcasts it and
+  drives Home Assistant — if it presented the admin token on the handshake URL
+  (`ws://…/?token=<token>`). Sockets without it are read-only consumers, which
+  is all a frame kiosk ever needs. Cross-origin WebSocket handshakes are refused
+  outright: a browser always sends `Origin`, and it must match `Host`. (Clients
+  that send no `Origin` at all — kiosk shells, scripts — are allowed; there is
+  nothing to compare.)
+
+### What stays open (LAN conveniences, each deliberate)
+
+- **All other GETs** — state, layout, scenes, media, thumbnails, health. Anyone
+  on the LAN can *watch*; they can't *change* anything.
+- **WebSocket connections themselves** (frame kiosks): upgrades need no token to
+  *receive* state. Gating that would break every wall TV on each restart for no
+  mutation-protection gain — and pushing state is separately gated, above.
 - **There is no localhost exemption.** Behind Docker port-mapping the client
   address the server sees is the Docker bridge, not the real caller — a
   localhost bypass would quietly become an everyone bypass. Local scripts should
@@ -93,15 +110,41 @@ from a browser on your LAN. `config.json` → `"cors"`:
 - `["http://conductor.local:8090", …]` — allow-list; the request Origin is
   echoed back when listed
 
+## What the web server will serve
+
+The static file server does **not** serve "anything inside the app directory".
+It serves an explicit allow-list: the app and frame pages
+(`app.html`, `app.js`, `engine.js`, `fx.js`, `fx-audio.js`, `frame.html`,
+`scores.html`), plus files under `app/` and `people/` with a safe extension.
+Media, sounds, decks, photos, overlays and thumbnails have their own dedicated,
+containment-checked routes.
+
+Everything else under the app directory — `.env`, `config.json`,
+`profiles.json`, `data/`, `_backups/`, `docs/`, `scripts/`, `docker/`,
+`node_modules/`, `.git/`, any `*.bak` — returns **404**. This matters most under
+Docker, where `docker/compose.yaml` mounts the whole repository as the web root.
+The compose file additionally keeps writable runtime data at `/app/data`,
+outside the web root, and masks the host `.env` inside the container.
+
 ## Other protections
 
 - Secrets (`HA_TOKEN`, `MA_TOKEN`, `ADMIN_TOKEN`) live in environment variables
-  (or `data/admin-token`), are never written to JSON config files, and are never
-  returned by any API (profile endpoints redact the music token).
-- Path traversal is rejected on all file-serving and upload endpoints; uploads
-  and theme imports are extension-whitelisted; profile writes are guarded
-  against accidental mass deletion; `POST /api/config` whitelists top-level
-  keys and writes a timestamped `.bak` before touching `config.json`.
+  (or `<DATA_DIR>/admin-token`), are never written to JSON config files, and are
+  never returned by any API (profile endpoints redact the music token). The
+  token comparison is constant-time.
+- Path traversal is rejected on all file-serving and upload endpoints, and
+  containment is re-checked *after* resolving symlinks — a symlink planted in
+  the media folder or shipped inside a theme pack cannot read the rest of the
+  host.
+- Uploads and theme imports are extension-whitelisted; theme zips are checked
+  against an uncompressed-size budget *before* anything is decompressed.
+- Profile writes are guarded against accidental mass deletion, and a refused
+  write is reported as a failure rather than silently succeeding.
+- `POST /api/config` whitelists top-level keys, validates frame ids, refuses to
+  overwrite a `config.json` it cannot parse, writes a timestamped `.bak` first
+  (keeping the last ten), and skips `__proto__`/`constructor`/`prototype` keys
+  so a crafted body cannot pollute `Object.prototype` (which, before v1.01,
+  could switch the auth gate off process-wide).
 - The in-page message bus (engine.js) accepts `postMessage` only from its own
   origin, and targets its own origin rather than `*` (file:// dev pages keep
   working — they have no usable origin).

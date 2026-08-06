@@ -21,14 +21,19 @@ cd docker
 docker compose up -d
 ```
 
-Open `http://<server-ip>:8090` — the control app loads. The compose file mounts the repo read-only and keeps writable state in `data/` and thumbnails in `media/.thumbs/`; see `docker/compose.yaml` for the exact mapping.
+Open `http://<server-ip>:8090` — the control app loads. The compose file mounts the repo read-only as the served web root, and keeps writable state in `data/` (mapped to `/app/data`, deliberately **outside** the web root) and thumbnails in `media/.thumbs/`; see `docker/compose.yaml` for the exact mapping.
 
 ### First run — the setup wizard
 
 On its very first boot the Conductor prints an **admin token** in its log (also
-written to `data/admin-token`); any change you save from the app asks for it
-once. Grab it with `docker logs roomscape | grep "admin token"` (bare Node: it's
-in the console output).
+written to `data/admin-token` — `<DATA_DIR>/admin-token` if you set `DATA_DIR`);
+any change you save from the app asks for it once. Grab it with
+`docker logs roomscape | grep "admin token"` (bare Node: it's in the console
+output).
+
+Keep that token handy: it is also what your Home Assistant `rest_command` needs
+for NFC tag taps (see [HA-SETUP.md](HA-SETUP.md)), since `auth.tagOpen` defaults
+to `false` from 1.01 onward.
 
 Then open the app: a **🚀 Set up your room** card sits at the top of Play. It
 walks you through — room name, how many screens and on which walls, which Home

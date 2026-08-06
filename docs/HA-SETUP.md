@@ -1,6 +1,6 @@
 # Home Assistant Setup
 
-**Doc version 0.10** · Home Assistant is Roomscape's baseline integration: TV power, lighting scenes, and NFC triggers all route through it.
+**Doc version 0.20** · Home Assistant is Roomscape's baseline integration: TV power, lighting scenes, and NFC triggers all route through it.
 
 What you get once connected: a **Room** tab in the control app (TV power / art-sleep / volume / input per TV, plus lights), and **automatic room transformation** — launching a mode wakes the TVs and sets that mode's light scene; restoring the at-rest mode puts TVs back to art/sleep and lights back to your default.
 
@@ -53,15 +53,30 @@ Other quirks worth knowing:
 
 Tapping an NFC tag on a phone fires an HA tag event; forward it to the Conductor's REST API:
 
+**The `x-rs-token` header is required.** Since v1.01 the tag route is gated like
+every other mutating call (`auth.tagOpen` now defaults to `false`), so the
+`rest_command` must carry the admin token — the same one printed in the boot log
+and stored in `data/admin-token`. Keep it in `secrets.yaml`, not in
+`configuration.yaml`.
+
+```yaml
+# secrets.yaml
+roomscape_token: "<the admin token>"
+```
+
 ```yaml
 # configuration.yaml
 rest_command:
   roomscape_tag:
     url: "http://<server-ip>:8090/api/tag/{{ tag }}"
     method: POST
+    headers:
+      x-rs-token: !secret roomscape_token
   roomscape_restore:
     url: "http://<server-ip>:8090/api/panic"
     method: POST
+    headers:
+      x-rs-token: !secret roomscape_token
 
 automation:
   - alias: "Roomscape — NFC tag tapped"
@@ -74,6 +89,11 @@ automation:
 ```
 
 The tag→mode map itself is edited in the app (or in `profiles.json`), so one generic `rest_command` covers every tag: stick a tag on a game box, map it to that game's mode, and a tap transforms the room.
+
+If you genuinely cannot send a header from your automation platform, you can
+re-open the route with `config.json` → `"auth": { "tagOpen": true }`. That is the
+opt-out, not the default: with it on, anyone who can reach the conductor on your
+LAN can launch any tagged mode without the token.
 
 ## 6. Optional: MQTT bridge (two-way)
 

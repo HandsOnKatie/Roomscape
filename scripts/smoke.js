@@ -1,6 +1,28 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.7 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.8 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.8 (RS-SEC v1.01): one check per security fix from the pre-release
+   penetration audits.
+     F1  static allow-list — app/frame/engine/fx/starter-sound still serve;
+         /profiles.json /config.example.json /package.json /.gitignore
+         /docs/INSTALL.md /conductor.js /data/admin-token /.env all 404.
+     F2  a tokenless WebSocket cannot replace server state; the same push WITH
+         ?token= does; a cross-origin upgrade is refused (403, not 101).
+     F3  mutating GETs (/api/panic, /api/rescan, /api/game/…, /api/mode/…,
+         /api/kid, /api/warmthumbs) are 401 without the token, 200 with it,
+         while ordinary GETs stay open.
+     F4  /api/tag/<id> is CLOSED by default (401 on GET and POST).
+     F5  {"ha":{"__proto__":{"enabled":false}}} does NOT switch the auth gate off.
+     F6  a symlink inside the media folder is not served (skipped with a note
+         on filesystems that can't create one).
+     F7  POST {layout:{walls:{…}}} REPLACES the wall set instead of adding to it.
+     F8  a corrupt config.json is refused with 500, and left untouched.
+     F9  a profiles write the wipe-block refuses answers 500, not ok:true.
+     F10 a zip entry declaring more than the remaining budget is rejected
+         before inflation.
+     F12 bad / duplicate / empty frame ids -> 400.
+     F13/F11/F14 source canaries + packIdOk('--')===false, oversize body -> 413,
+         .bak rotation caps at 10, boot banner reads v5.01 (community v1.01).
    v1.7 (Phase 4b, RS-WIZARD): boot 1 gains the wizard canaries — the served
    app page carries the ✏️ Design toggle (id="designtgl") and the served
    /app.js carries openSetupWizard + the starter-sound remap
@@ -100,6 +122,19 @@ function post(p, obj, port, tok) {   // v1.6: tok undefined -> smoke token; tok 
     rq.end(body);
   });
 }
+// v1.8: POST a body EXACTLY as given (JSON.stringify can't express a __proto__ key)
+function postStr(p, body, port, tok) {
+  return new Promise((res, rej) => {
+    const hdrs = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+    const t = (tok === undefined) ? TOK : tok;
+    if (t) hdrs['x-rs-token'] = t;
+    const rq = http.request({ host: '127.0.0.1', port: port || PORT, path: p, method: 'POST', timeout: 4000, headers: hdrs }, r => {
+      let s = ''; r.on('data', c => s += c); r.on('end', () => res({ code: r.statusCode, body: s }));
+    });
+    rq.on('error', rej).on('timeout', function () { rq.destroy(new Error('timeout')); });
+    rq.end(body);
+  });
+}
 function get(p, port) {
   return new Promise((res, rej) => {
     http.get({ host: '127.0.0.1', port: port || PORT, path: p, timeout: 4000 }, r => {
@@ -138,6 +173,56 @@ function postRaw(p, buf, ctype, port) {
   });
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---- v1.8 (RS-SEC v1.01) helpers ---- */
+const crypto = require('crypto');
+// raw WebSocket handshake: resolves { code, socket } — code 101 = upgraded
+function wsConnect(pathQ, extraHeaders, port) {
+  return new Promise((resolve) => {
+    const rq = http.request({
+      host: '127.0.0.1', port: port || PORT, path: pathQ || '/', timeout: 5000,
+      headers: Object.assign({
+        Connection: 'Upgrade', Upgrade: 'websocket',
+        'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
+        'Sec-WebSocket-Version': '13'
+      }, extraHeaders || {})
+    });
+    let settled = false;
+    const fin = (o) => { if (!settled) { settled = true; resolve(o); } };
+    rq.on('upgrade', (res, socket) => { socket.on('error', () => {}); fin({ code: 101, socket }); });
+    rq.on('response', (res) => { res.resume(); fin({ code: res.statusCode, socket: null }); });
+    rq.on('error', (e) => fin({ code: 0, socket: null, err: String(e && e.message) }));
+    rq.on('timeout', () => { try { rq.destroy(); } catch (e) {} fin({ code: 0, socket: null, err: 'timeout' }); });
+    rq.end();
+  });
+}
+// client -> server text frame (clients MUST mask, per RFC 6455)
+function wsSendText(socket, obj) {
+  const payload = Buffer.from(JSON.stringify(obj), 'utf8');
+  const mask = crypto.randomBytes(4), len = payload.length;
+  let header;
+  if (len < 126) { header = Buffer.alloc(2); header[0] = 0x81; header[1] = 0x80 | len; }
+  else { header = Buffer.alloc(4); header[0] = 0x81; header[1] = 0x80 | 126; header.writeUInt16BE(len, 2); }
+  const masked = Buffer.alloc(len);
+  for (let i = 0; i < len; i++) masked[i] = payload[i] ^ mask[i & 3];
+  try { socket.write(Buffer.concat([header, mask, masked])); } catch (e) {}
+}
+// oversize POST: the server answers 413 mid-upload and then hangs up, so a
+// transport error after a 413 is expected — report whichever arrives first.
+function postBig(p, bytes, port) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ pad: 'x'.repeat(bytes) });
+    let done = false;
+    const fin = (o) => { if (!done) { done = true; resolve(o); } };
+    const rq = http.request({ host: '127.0.0.1', port: port || PORT, path: p, method: 'POST', timeout: 8000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'x-rs-token': TOK } }, r => {
+      let s = ''; r.on('data', c => s += c); r.on('end', () => fin({ code: r.statusCode, body: s }));
+    });
+    rq.on('error', (e) => fin({ code: 0, body: String(e && e.message) }));
+    rq.on('timeout', () => { try { rq.destroy(); } catch (e) {} fin({ code: 0, body: 'timeout' }); });
+    rq.end(body);
+  });
+}
 
 const checks = [];
 function check(name, ok, detail) { checks.push({ name, ok, detail }); console.log((ok ? '  ✔ ' : '  ✘ ') + name + (ok ? '' : '  — ' + detail)); }
@@ -335,7 +420,7 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       impBad.code === 400, 'code ' + impBad.code + ' ' + impBad.body.slice(0, 160));
 
     // ---- v1.6 (Phase 4a): RS-AUTH v1 — admin-token gate ----
-    check('boot log announces the auth gate', bootLog.indexOf('[auth] RS-AUTH v1 active') >= 0, 'no [auth] line in boot log');
+    check('boot log announces the auth gate', bootLog.indexOf('[auth] RS-AUTH v1.1 active') >= 0, 'no [auth] line in boot log');
     const nt = await post('/api/mode/dining', {}, PORT, null);
     let ntj = null; try { ntj = JSON.parse(nt.body); } catch (e) {}
     check('POST /api/mode/dining without token -> 401 {error:"auth"}',
@@ -349,6 +434,103 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     check('GET /api/ha/entities with token + no HA -> 200 {ok:false,"ha not configured"}',
       he1.code === 200 && !!(hej && hej.ok === false && hej.error === 'ha not configured'),
       'code ' + he1.code + ' ' + he1.body.slice(0, 160));
+    check('boot banner reads v5.01 (community v1.01)',
+      bootLog.indexOf('Roomscape Conductor  v5.01 (community v1.01)') >= 0, bootLog.slice(0, 400));
+
+    // ================= v1.8 (RS-SEC v1.01) =================
+
+    // ---- F1: the static web root is an allow-list, not "everything in APP_DIR" ----
+    // APP_DIR is the repo ROOT here, exactly as docker/compose.yaml arranges it.
+    for (const [pth, what] of [['/app.js', 'app.js'], ['/engine.js', 'engine.js'], ['/fx.js', 'fx.js'],
+                               ['/fx-audio.js', 'fx-audio.js'], ['/frame.html', 'frame.html'], ['/scores.html', 'scores.html']]) {
+      const r = await get(pth);
+      check('F1 app asset still serves: ' + what, r.code === 200 && r.body.length > 200, 'code ' + r.code + ' len ' + r.body.length);
+    }
+    // every one of these files EXISTS in the repo root — the 404 proves the
+    // allow-list refused it, not that it was simply missing.
+    const LEAKS = ['/profiles.json', '/config.example.json', '/package.json', '/.gitignore',
+                   '/SECURITY.md', '/docs/INSTALL.md', '/scripts/smoke.js', '/conductor.js',
+                   '/conductor-lib/media.js', '/docker/compose.yaml', '/.env', '/data/admin-token',
+                   '/_backups/anything.bak', '/themes/ocean-depths/theme.json'];
+    const leaked = [];
+    for (const pth of LEAKS) {
+      const onDisk = fs.existsSync(path.join(ROOT, pth.replace(/^\//, '')));
+      const r = await get(pth);
+      if (r.code !== 404) leaked.push(pth + ' -> ' + r.code + (onDisk ? ' (file exists!)' : ''));
+    }
+    check('F1 static server 404s .env / data/admin-token / profiles.json / config + docs + source files',
+      leaked.length === 0, JSON.stringify(leaked));
+
+    // ---- F3: handlers that mutate but answer GET now need the token ----
+    const MUTGET = ['/api/panic', '/api/rescan', '/api/warmthumbs', '/api/kid?on=1',
+                    '/api/game/dining', '/api/mode/dining'];
+    const ungated = [];
+    for (const pth of MUTGET) { const r = await get(pth); if (r.code !== 401) ungated.push(pth + ' -> ' + r.code); }
+    check('F3 mutating GET routes 401 without the token (' + MUTGET.length + ' routes)',
+      ungated.length === 0, JSON.stringify(ungated));
+    const panicOk = await getTok('/api/panic');
+    check('F3 GET /api/panic WITH the token still works (200 ok:true)',
+      panicOk.code === 200 && panicOk.body.indexOf('"ok":true') >= 0, 'code ' + panicOk.code + ' ' + panicOk.body.slice(0, 120));
+    const stillOpen = await get('/api/layout');
+    check('F3 ordinary GETs are untouched (/api/layout still open)', stillOpen.code === 200, 'code ' + stillOpen.code);
+
+    // ---- F4: /api/tag/* is closed by default (auth.tagOpen now defaults false) ----
+    const tagG = await get('/api/tag/04:AB:CD');
+    const tagP = await post('/api/tag/04:AB:CD', {}, PORT, null);
+    check('F4 /api/tag/<id> needs the token by default (GET + POST both 401)',
+      tagG.code === 401 && tagP.code === 401, 'GET ' + tagG.code + ' POST ' + tagP.code);
+    check('F4 boot log reports the tag route closed',
+      bootLog.indexOf('[tag route closed]') >= 0, bootLog.slice(-600));
+
+    // ---- F6: symlink escape out of the media folder ----
+    const secretPath = path.join(tmp, 'outside-secret.txt');
+    fs.writeFileSync(secretPath, 'SMOKE-SECRET-DO-NOT-SERVE');
+    let linkMade = false;
+    try { fs.mkdirSync(path.join(tmp, 'media'), { recursive: true }); fs.symlinkSync(secretPath, path.join(tmp, 'media', 'escape.txt')); linkMade = true; } catch (e) {}
+    if (linkMade) {
+      const esc = await get('/media/escape.txt');
+      check('F6 a symlink inside the media folder is NOT served',
+        esc.code >= 400 && esc.body.indexOf('SMOKE-SECRET') < 0, 'code ' + esc.code + ' body ' + esc.body.slice(0, 80));
+      try { fs.unlinkSync(path.join(tmp, 'media', 'escape.txt')); } catch (e) {}
+    } else {
+      check('F6 a symlink inside the media folder is NOT served', true, 'skipped — this filesystem cannot create symlinks');
+    }
+
+    // ---- F2: WebSocket state pushes ----
+    const wsBad = await wsConnect('/', {}, PORT);
+    check('F2 a tokenless WS upgrade is still accepted (frames stay read-only consumers)', wsBad.code === 101, 'code ' + wsBad.code);
+    if (wsBad.socket) {
+      wsSendText(wsBad.socket, { ie: true, type: 'state', state: { game: 'dining', mode: 'smoke-hijack', rev: 9001 } });
+      await sleep(700);
+      const s1 = await get('/api/state');
+      let sj1 = null; try { sj1 = JSON.parse(s1.body); } catch (e) {}
+      check('F2 tokenless WS {type:"state"} does NOT replace server state',
+        !!sj1 && sj1.mode !== 'smoke-hijack', 'mode is now ' + JSON.stringify(sj1 && sj1.mode));
+      check('F2 the refusal is logged', bootLog.indexOf('REFUSED state push from a tokenless socket') >= 0, bootLog.slice(-600));
+      try { wsBad.socket.destroy(); } catch (e) {}
+    } else check('F2 tokenless WS {type:"state"} does NOT replace server state', false, 'no socket: ' + JSON.stringify(wsBad));
+
+    const wsGood = await wsConnect('/?token=' + TOK, {}, PORT);
+    if (wsGood.socket) {
+      wsSendText(wsGood.socket, { ie: true, type: 'state', state: { game: 'dining', mode: 'smoke-authed', rev: 9002 } });
+      await sleep(700);
+      const s2 = await get('/api/state');
+      let sj2 = null; try { sj2 = JSON.parse(s2.body); } catch (e) {}
+      check('F2 WS with ?token= CAN still publish state (app volume/FX path)',
+        !!sj2 && sj2.mode === 'smoke-authed', 'mode is ' + JSON.stringify(sj2 && sj2.mode));
+      try { wsGood.socket.destroy(); } catch (e) {}
+    } else check('F2 WS with ?token= CAN still publish state (app volume/FX path)', false, 'no socket: ' + JSON.stringify(wsGood));
+
+    const wsEvil = await wsConnect('/', { Origin: 'http://evil.example' }, PORT);
+    check('F2 a cross-origin WS upgrade is refused (403, not 101)', wsEvil.code === 403, 'code ' + wsEvil.code + ' ' + (wsEvil.err || ''));
+    check('F2 the cross-origin rejection is logged', bootLog.indexOf('REJECTED upgrade: cross-origin handshake') >= 0, bootLog.slice(-600));
+    const wsSame = await wsConnect('/', { Origin: 'http://127.0.0.1:' + PORT }, PORT);
+    check('F2 a same-origin WS upgrade is accepted', wsSame.code === 101, 'code ' + wsSame.code);
+    if (wsSame.socket) { try { wsSame.socket.destroy(); } catch (e) {} }
+
+    // ---- F14: an oversize body gets 413, not a hung connection ----
+    const big = await postBig('/api/state', 2.5 * 1024 * 1024);
+    check('F14 an oversize POST body answers 413 (not a silent destroy)', big.code === 413, 'code ' + big.code + ' ' + String(big.body).slice(0, 120));
   }
   child.kill();
 
@@ -399,6 +581,55 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       check('config write left a timestamped .bak beside the scratch config',
         fs.readdirSync(tmp).some(f => f.indexOf('smoke-config.json.') === 0 && /\.bak$/.test(f)),
         JSON.stringify(fs.readdirSync(tmp).filter(f => f.indexOf('smoke-config') === 0)));
+
+      // ================= v1.8 (RS-SEC v1.01) — config surface =================
+
+      // ---- F7: layout.walls REPLACES, it does not merge ----
+      // boot 2 started with walls {W:[W1,W2,W3]}; asking for {A:[A1,A2]} must
+      // leave exactly two frames, not five.
+      const rep = await post('/api/config', { layout: { walls: { A: ['A1', 'A2'] } } }, PORT2);
+      const layR = await get('/api/layout', PORT2);
+      let lr = null; try { lr = JSON.parse(layR.body); } catch (e) {}
+      check('F7 POST layout.walls REPLACES the wall set (2 frames, not 5)',
+        rep.code === 200 && !!lr && JSON.stringify(lr.frames) === '["A1","A2"]' && JSON.stringify(Object.keys(lr.walls)) === '["A"]',
+        'frames ' + JSON.stringify(lr && lr.frames) + ' walls ' + JSON.stringify(lr && Object.keys(lr.walls)));
+
+      // ---- F12: frame id validation ----
+      const badId = await post('/api/config', { layout: { walls: { Z: ['bad id <script>'] } } }, PORT2);
+      check('F12 illegal frame id -> 400', badId.code === 400 && badId.body.indexOf('illegal frame id') >= 0, 'code ' + badId.code + ' ' + badId.body.slice(0, 160));
+      const dupId = await post('/api/config', { layout: { walls: { Z: ['Z1'], Y: ['Z1'] } } }, PORT2);
+      check('F12 duplicate frame id across walls -> 400', dupId.code === 400 && dupId.body.indexOf('duplicate frame id') >= 0, 'code ' + dupId.code + ' ' + dupId.body.slice(0, 160));
+      const emptyW = await post('/api/config', { layout: { walls: {} } }, PORT2);
+      check('F12 empty walls object -> 400', emptyW.code === 400 && emptyW.body.indexOf('empty') >= 0, 'code ' + emptyW.code + ' ' + emptyW.body.slice(0, 160));
+      const layR2 = await get('/api/layout', PORT2);
+      let lr2 = null; try { lr2 = JSON.parse(layR2.body); } catch (e) {}
+      check('F12 a rejected layout changed nothing (still A1/A2)',
+        !!lr2 && JSON.stringify(lr2.frames) === '["A1","A2"]', JSON.stringify(lr2 && lr2.frames));
+
+      // ---- F5: prototype pollution through the config deep-merge ----
+      // The proved exploit turned the auth gate off process-wide.
+      // NB: written as a raw JSON string — an object literal's __proto__ key
+      // sets the literal's prototype and would never survive JSON.stringify.
+      const poll = await postStr('/api/config', '{"ha":{"__proto__":{"enabled":false}}}', PORT2);
+      const stillGated = await post('/api/mode/dining', {}, PORT2, null);
+      check('F5 {"ha":{"__proto__":{"enabled":false}}} does NOT disable the auth gate',
+        stillGated.code === 401, 'config POST ' + poll.code + ', tokenless POST now ' + stillGated.code + ' (401 expected)');
+      const stillUp = await get('/api/health', PORT2);
+      check('F5 the conductor is still healthy after the pollution attempt', stillUp.code === 200, 'code ' + stillUp.code);
+
+      // ---- F14: config .bak rotation caps at 10 ----
+      for (let i = 0; i < 12; i++) await post('/api/config', { atRestMode: 'rot' + i }, PORT2);
+      const baks = fs.readdirSync(tmp).filter(f => f.indexOf('smoke-config.json.') === 0 && /\.bak$/.test(f));
+      check('F14 config .bak files are rotated (<= 10 kept)', baks.length <= 10, baks.length + ' .bak files');
+
+      // ---- F8: a corrupt config.json is refused, not silently replaced ----
+      // LAST in this boot: it deliberately leaves the scratch config unparseable.
+      fs.writeFileSync(cfgFile, '{ this is not json ');
+      const corrupt = await post('/api/config', { atRestMode: 'shouldnotstick' }, PORT2);
+      check('F8 a corrupt config.json -> 500 "refusing to overwrite"',
+        corrupt.code === 500 && corrupt.body.indexOf('refusing to overwrite') >= 0, 'code ' + corrupt.code + ' ' + corrupt.body.slice(0, 200));
+      check('F8 the corrupt config.json was left exactly as-is',
+        fs.readFileSync(cfgFile, 'utf8') === '{ this is not json ', JSON.stringify(fs.readFileSync(cfgFile, 'utf8')).slice(0, 120));
     }
   } catch (e) { check('config boot: layout checks ran', false, String(e)); }
   child2.kill();
@@ -473,6 +704,92 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     }
   } catch (e) { check('empty-profiles boot checks ran', false, String(e)); }
   child4.kill();
+
+  // ---- boot 5 (v1.8, RS-SEC F9): the profiles wipe-block must REPORT failure ----
+  // Six real modes on disk; a POST that collapses them to one is refused by the
+  // file-layer guard. Before v1.01 that refusal was a silent `return`, so the
+  // route answered ok:true while memory and disk had diverged.
+  const PORT5 = PORT + 4;
+  const sixProf = path.join(tmp, 'profiles-six.json');
+  const six = { profiles: {}, tagmap: {}, settings: {} };
+  ['dining', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'].forEach(id => { six.profiles[id] = { name: id, frames: ['pano'], kidSafe: true }; });
+  fs.writeFileSync(sixProf, JSON.stringify(six, null, 2));
+  const child5 = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
+    env: Object.assign({}, process.env, {
+      PORT: String(PORT5), APP_DIR: ROOT, ADMIN_TOKEN: TOK,
+      PROFILES_FILE: sixProf,
+      STATE_FILE: path.join(tmp, 'state5.json'),
+      MEDIA_DIR: path.join(tmp, 'media'),
+      HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let bootLog5 = '';
+  child5.stdout.on('data', d => bootLog5 += d);
+  child5.stderr.on('data', d => bootLog5 += d);
+  try {
+    let up5 = false;
+    for (let i = 0; i < 30 && !up5; i++) { await sleep(500); try { up5 = (await get('/api/health', PORT5)).code === 200; } catch (e) {} }
+    check('wipe-block boot: conductor boots with a 7-mode profiles store', up5, 'no response after 15s. Boot log:\n' + bootLog5.slice(-2000));
+    if (up5) {
+      // allowBulkDelete gets us past the HTTP-layer PROFILES-GUARD so the
+      // file-layer wipe-block is what actually decides.
+      const wipe = await post('/api/profiles', { profiles: { dining: { name: 'dining', frames: ['pano'] } }, tagmap: {}, settings: {}, allowBulkDelete: true }, PORT5);
+      check('F9 a wipe-blocked profiles write answers an ERROR, not ok:true',
+        wipe.code >= 400 && wipe.body.indexOf('"ok":true') < 0, 'code ' + wipe.code + ' ' + wipe.body.slice(0, 220));
+      let disk5 = null; try { disk5 = JSON.parse(fs.readFileSync(sixProf, 'utf8')); } catch (e) {}
+      check('F9 the guard still prevented the write (7 modes intact on disk)',
+        !!(disk5 && disk5.profiles && Object.keys(disk5.profiles).length === 7),
+        'modes on disk: ' + JSON.stringify(disk5 && disk5.profiles && Object.keys(disk5.profiles)));
+      check('F9 the refusal is logged CRITICAL',
+        bootLog5.indexOf('blocked a profiles write that would shrink') >= 0, bootLog5.slice(-600));
+    }
+  } catch (e) { check('wipe-block boot checks ran', false, String(e)); }
+  child5.kill();
+
+  // ---- library + source checks (no boot needed) ----
+  try {
+    const zipLib2 = require(path.join(ROOT, 'conductor-lib', 'zip.js'));
+    // F10: a central-directory entry that DECLARES more than the whole budget
+    // must be rejected before zlib is asked to allocate anything.
+    const okZip = zipLib2.writeZip([{ name: 'p/theme.json', data: Buffer.from('{"format":1}') }]);
+    const bomb = Buffer.from(okZip);
+    // patch the central-directory uncompressed-size field (offset +24) to ~4 GB
+    const eo = (function () { for (let i = bomb.length - 22; i >= 0; i--) if (bomb.readUInt32LE(i) === 0x06054b50) return i; return -1; })();
+    const cdOff = bomb.readUInt32LE(eo + 16);
+    bomb.writeUInt32LE(0xFFFFFFF0, cdOff + 24);
+    let bombErr = '';
+    try { zipLib2.readZip(bomb); } catch (e) { bombErr = String(e && e.message); }
+    check('F10 a zip entry declaring more than the remaining budget is rejected before inflating',
+      bombErr.indexOf('uncompressed size exceeds') >= 0, 'error was: ' + JSON.stringify(bombErr));
+    check('F10 an honest zip still parses', zipLib2.readZip(okZip).length === 1, 'entries ' + zipLib2.readZip(okZip).length);
+
+    // F14: pack ids must contain at least one alphanumeric
+    const themesLib = require(path.join(ROOT, 'conductor-lib', 'themes.js'))({});
+    check('F14 packIdOk rejects "-" and "--" but accepts a real id',
+      themesLib.packIdOk('-') === false && themesLib.packIdOk('--') === false && themesLib.packIdOk('ocean-depths') === true,
+      '- ' + themesLib.packIdOk('-') + ', -- ' + themesLib.packIdOk('--') + ', ocean-depths ' + themesLib.packIdOk('ocean-depths'));
+
+    // source canaries for the fixes that need live HA / Music Assistant to exercise
+    const condSrc = fs.readFileSync(path.join(ROOT, 'conductor.js'), 'utf8');
+    const haSrc = fs.readFileSync(path.join(ROOT, 'conductor-lib', 'ha.js'), 'utf8');
+    check('F11 mode-music gate accepts MA_URL from the environment',
+      condSrc.indexOf('!(process.env.MA_URL || mu.url)') >= 0, 'gate still keyed on settings.music.url alone');
+    check('F11 the music-query substring fallback requires terms of 3+ characters',
+      /t\.length >= 3/.test(condSrc), 'no minimum term length found');
+    check('F13 the HA client bounds its response size and total time',
+      haSrc.indexOf('HA_MAX_BODY') >= 0 && haSrc.indexOf('HA_DEADLINE') >= 0, 'no cap/deadline in conductor-lib/ha.js');
+    check('F14 the admin-token comparison is constant-time',
+      condSrc.indexOf('timingSafeEqual') >= 0, 'no timingSafeEqual in conductor.js');
+    check('F14 .gitignore covers config.json.*.bak',
+      fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8').indexOf('config.json.*.bak') >= 0, 'not ignored');
+    const compose = fs.readFileSync(path.join(ROOT, 'docker', 'compose.yaml'), 'utf8');
+    check('F1b docker keeps runtime data OUT of the web root (DATA_DIR=/app/data)',
+      compose.indexOf('DATA_DIR=/app/data') >= 0 && compose.indexOf('../data:/app/data') >= 0 && compose.indexOf(':/app/web/data') < 0,
+      'compose still mounts data inside /app/web');
+    check('F4 config.example.json ships auth.tagOpen false',
+      /"tagOpen"\s*:\s*false/.test(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8')), 'tagOpen not defaulted to false');
+  } catch (e) { check('library + source checks ran', false, String(e && e.stack || e)); }
 
   const fails = checks.filter(c => !c.ok).length;
   console.log('\n' + (fails ? 'SMOKE FAIL — ' + fails + ' failing' : 'SMOKE PASS — ' + checks.length + ' checks'));

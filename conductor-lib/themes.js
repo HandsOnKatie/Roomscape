@@ -44,7 +44,11 @@ module.exports = function (ctx) {
     return true;
   }
 
-  function packIdOk(id) { return typeof id === 'string' && !!id && PACK_ID_RE.test(id); }
+  /* RS-SEC v1.01 (F14): '-' and '--' passed the charset test, so a pack could
+     be imported under a name that is pure punctuation — invisible in listings,
+     awkward to remove, and a nuisance in shells. Require at least one
+     alphanumeric character, and cap the length. */
+  function packIdOk(id) { return typeof id === 'string' && !!id && id.length <= 60 && PACK_ID_RE.test(id) && /[a-z0-9]/.test(id); }
 
   /* ---------- manifest validation: PURE (no fs) — shared by scanThemes and the
      RS-THEME-ZIP import endpoint. Takes the PARSED theme.json; returns
@@ -89,7 +93,7 @@ module.exports = function (ctx) {
       const pack = { id: id, dir: pdir, name: id, author: '', version: '', kidSafe: false,
                      section: null, requires: null, cover: null, modes: {}, errors: [] };
       packs.push(pack);
-      if (!PACK_ID_RE.test(id)) { pack.errors.push('illegal pack folder name "' + id + '" (allowed: a-z 0-9 -)'); continue; }
+      if (!packIdOk(id)) { pack.errors.push('illegal pack folder name "' + id + '" (allowed: a-z 0-9 -, at least one letter or digit, max 60 chars)'); continue; }
       let raw;
       try { raw = fs.readFileSync(path.join(pdir, 'theme.json'), 'utf8'); }
       catch (e) { pack.errors.push('theme.json missing'); continue; }

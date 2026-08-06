@@ -1,6 +1,6 @@
 # Roomscape roadmap
 
-**Repo version: 1.00 — RELEASED 2026-08-06** (conductor v5.00). All four phases below are complete; the "After v1.00" list is what's next.
+**Repo version: 1.01 — RELEASED 2026-08-06** (conductor v5.01; 1.00 plus the pre-release security fix pass — see CHANGELOG). All four phases below are complete; the "After v1.00" list is what's next.
 
 ## Done (v0.10 — this scaffold)
 - Engine extracted from the reference install and de-personalized: no LAN IPs, entity ids, personal defaults, or credentials in code or config.

@@ -1,6 +1,9 @@
 # --- secrets & local config (never commit) ---
 .env
+.env.*
+!.env.example
 config.json
+config.json.*.bak
 
 # --- runtime data (machine-local) ---
 data/

@@ -1,4 +1,4 @@
-# Roomscape Conductor — docker compose (public v1.0)
+# Roomscape Conductor — docker compose (public v1.01)
 #
 # Run from this folder:
 #   cp ../.env.example ../.env    # then fill in HA_URL / HA_TOKEN (and MA_* if used)
@@ -6,7 +6,9 @@
 #   open http://<server>:8090
 #
 # The repo root is mounted read-only as the served app; only the folders the
-# Conductor actually writes to are mounted writable on top of it.
+# Conductor actually writes to are mounted writable — and, since v1.01, the
+# writable runtime data lives OUTSIDE the web root (/app/data, not
+# /app/web/data) so nothing under it can ever be reached over HTTP.
 services:
   roomscape:
     build: .
@@ -21,16 +23,29 @@ services:
       - ../.env
     environment:
       - TZ=${TZ:-UTC}
+      # RS-SEC v1.01 (F1b): runtime state lives outside the served web root.
+      # DATA_DIR is where data/admin-token is generated/read.
+      - DATA_DIR=/app/data
+      - STATE_FILE=/app/data/state.json
+      - PROFILES_FILE=/app/data/profiles.json
     volumes:
       # App/engine files (conductor.js, conductor-lib/, app/, frame pages) —
       # read-only: editing them on the host is the deploy; content/web files
       # are picked up instantly, conductor.js after `docker restart roomscape`.
       - ..:/app/web:ro
-      # Runtime state — WRITABLE: state.json, profiles.json + backups live here.
-      - ../data:/app/web/data
+      # Runtime state — WRITABLE, and NOT under /app/web: state.json,
+      # profiles.json, admin-token + backups live here.
+      - ../data:/app/data
       # Media library — writable so the thumbnail cache (.thumbs/) can build.
       - ../media:/app/web/media
-      # Theme packs — read-only (drop a pack folder in, then rescan in the app).
-      - ../themes:/app/web/themes:ro
+      # Theme packs — WRITABLE so "Import theme…" in the app can install a pack
+      # (v1.01: was :ro, which made import fail with EROFS).
+      - ../themes:/app/web/themes
       # Sound library (intro cues, sfx) — read-only.
       - ../sounds:/app/web/sounds:ro
+      # RS-SEC v1.01 (F1b): belt-and-braces — the host .env sits inside the
+      # directory mounted as the web root, so mask it with an empty file. The
+      # real secrets still reach the process through env_file above. (The
+      # static allow-list in conductor.js already refuses to serve it; this
+      # makes it not exist in the container at all.)
+      - /dev/null:/app/web/.env:ro
