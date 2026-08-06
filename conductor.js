@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v4.74 (community release v0.50)
+   Roomscape — Conductor backend  v5.00 (community release v1.00)
+   v5.00: v1.00 release — admin-token auth, first-run wizard endpoints, theme
+          packs, N-frame layouts + roles, config.json, starter sounds. Major
+          bump marks the completed community-release architecture.
    v4.74 (Phase 4a): RS-AUTH v1 — admin-token gate on every mutating request
           (env ADMIN_TOKEN > data/admin-token > generated on first run; the
           gate is a chain-capture wrapper appended LAST so unauthorized
@@ -1034,7 +1037,7 @@ function coreHandler(req, res) {
   }
 
   if (p.startsWith('/api/')) {
-    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '4.74', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
+    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.00', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
     if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST });   // v2.62: wall shape, single source of truth · RS-CONFIG v1: roles/orientation/atRest
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, state);
     if (p === '/api/scenes') return sendJSON(res, 200, { count: Object.keys(landIndex).length, thumbs: thumbKind, scenes: Object.keys(landIndex).sort().map(function (k) { const l = landIndex[k]; const e = encodeURIComponent(l[0]); const d = path.dirname(l[0]).replace(/\\/g, '/'); const dm = (global.__rsDims || {})[l[0]]; const ori = (dm && dm.w && dm.h) ? (dm.w > dm.h ? 'l' : (dm.h > dm.w ? 'p' : 's')) : null; return { key: k, count: l.length, dir: (d === '.' ? '' : d), ori: ori, sample: '/media/' + e, thumb: '/thumb/' + encodeURIComponent(path.basename(l[0])) + '?src=media&w=320&p=' + e, video: VID_RE.test(l[0]) }; }) });   // v2.40 dir = folder path; v2.41 ori = p|l|s from RS-SCENE-DIMS (null while unprobed / video)
@@ -4505,8 +4508,8 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       { id: 'werewolf', name: 'Werewolf Narrator', icon: '🐺', players: [4, 12], deck: null,
         blurb: 'The room narrates, the lights go out for night, dawn reveals the victim' }
     ];
-    var SND = { timeup: 'sounds/loops/alarm_call_2.mp3', fanfare: 'sounds/fanfare/fanfare_1.mp3',
-                win: 'sounds/fanfare/huge_win.mp3', night: 'sounds/scary/ominous_suspenseful_ambience.mp3' };
+    var SND = { timeup: 'sounds/starter/alarm_gentle.wav', fanfare: 'sounds/starter/fanfare_synth.wav',
+                win: 'sounds/starter/fanfare_synth.wav', night: 'sounds/starter/whoosh.wav' };   /* v5.00: starter set (CC0) — replace with richer sounds in sounds/ if you like */
 
     function gT(t) { G.timers.push(t); }
     function gClear() { G.timers.forEach(clearTimeout); G.timers = []; }

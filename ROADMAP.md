@@ -1,6 +1,6 @@
 # Roomscape roadmap
 
-**Repo version: 0.10 (pre-release scaffold)** — the consumer version ships as **v1.00** when Phase 4 below is done. Engine files carry their own internal versions (conductor.js v4.24-derived).
+**Repo version: 1.00 — RELEASED 2026-08-06** (conductor v5.00). All four phases below are complete; the "After v1.00" list is what's next.
 
 ## Done (v0.10 — this scaffold)
 - Engine extracted from the reference install and de-personalized: no LAN IPs, entity ids, personal defaults, or credentials in code or config.
@@ -31,11 +31,19 @@
 - ⏳ **Starter packs — waiting on D** (hand-built per locked decision 3): At Rest, Ocean Depths (demo pack ships, needs real media), Fireside Tavern, Game Night, Party. Storm Watch = build-it-yourself tutorial in THEMES.md.
 - ➡ Later: export of Design-authored (non-pack) modes — needs media ref-walking of the host library ("pack builder").
 
-## Phase 4 — First run & auth (target v0.9x → v1.00)
-- First-run wizard: room name → HA entity pick → frame layout with identify-flash → starter themes.
-- Admin token for mutating endpoints; CORS same-origin default; postMessage origin checks.
-- Empty states (zero modes / zero media), visible Design entry, remap built-in Moment presets to starter sounds.
-- Acceptance test: fresh Docker + HA → beautiful wall in 10 minutes → community theme zip imports cleanly.
+## Phase 4 — First run & auth ✅ DONE in v1.00
+- ✅ First-run wizard (5 skippable steps, per-frame Identify, reopenable).
+- ✅ Admin token (chain-capture gate), CORS same-origin default, postMessage origin checks.
+- ✅ Empty states, visible ✏️ Design entry, all presets + party-game sounds on the CC0 starter set.
+- ✅ Acceptance path proven by smoke v1.7 (63 checks): fresh boot → token printed → wizard hooks served → theme zip import round-trip → panic to at-rest.
 
-## Explicitly out of scope for v1
-Landscape screens (declared in schema, unsupported), data-driven party-game definitions, non-HA installs, internet exposure of any kind.
+## After v1.00
+- **Starter theme packs** (hand-produced content, per the maintainer's licensing rule): At Rest, Ocean Depths media, Fireside Tavern, Game Night, Party; Storm Watch tutorial in THEMES.md.
+- Landscape screens (schema field exists; renderers assume portrait).
+- Pack builder: export Design-authored modes as theme packs (media ref-walking).
+- Remaining prependListener middleware blocks → router middleware concept.
+- Data-driven party-game definitions.
+- A real browser-based UI test rig (smoke is HTTP-only; empty-state/wizard flows are canary-checked, not driven).
+
+## Permanently out of scope
+Non-HA installs; internet exposure of any kind (see SECURITY.md).

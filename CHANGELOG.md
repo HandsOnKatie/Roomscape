@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.00 — 2026-08-06 (conductor v5.00 · app v3.83 · engine v0.91 · fx v1.61)
+**First feature-complete release.** Phases 4a+4b on top of 0.40:
+- **Admin token (RS-AUTH v1)** — every mutating call requires `x-rs-token` (env `ADMIN_TOKEN`, `data/admin-token`, or generated + printed at first boot). Chain-capture gate: unauthorized requests never reach a handler. `auth.enabled:false` opt-out; `/api/tag/*` open by default for HA NFC (closable). No localhost bypass (Docker makes it meaningless).
+- **CORS locked to same-origin by default** (`config.cors` re-opens deliberately); engine.js postMessage now origin-checked both directions.
+- **First-run wizard** — 🚀 setup card on fresh installs: room name → screen layout (1–8 frames, wall arrangements) → HA TV mapping with per-frame Identify flash → light zones → theme packs. Every step skippable; reopenable from Settings. Backed by new `POST /api/config` (whitelisted, .bak'd, live layout re-derive) and token-gated `GET /api/ha/entities`.
+- **Empty states fixed**: zero modes now shows a proper invitation (was: blank screen + a phantom "undefined" mode in Design); visible ✏️ Design button (long-press kept).
+- **Starter sounds**: six synthesized CC0 WAVs in `sounds/starter/`; all Moments/intro presets and the party-games sound map remapped — zero references to private library files remain, and no preset claims a sound it doesn't have.
+- Smoke v1.7: 63 checks incl. auth 401/200 paths, token generation boot, config live-apply, wizard canaries, starter-sound integrity.
+
+**Known gaps at v1.00** (tracked in ROADMAP): starter theme packs are hand-produced content, landing as they're made; landscape screens unsupported; a handful of legacy prependListener blocks remain by design (response-chaining middleware).
+
 ## 0.40 — 2026-08-06 (conductor v4.64 · app v3.63 · engine v0.90 · fx v1.61)
 **Phase 3 — Theme packs.** The headline feature, end to end.
 - **Loader (RS-THEMES v1)**: packs in `themes/` scan at boot/rescan; modes register in-memory under namespaced dot ids (`ocean-depths.main`) — never written to profiles.json; pack media serves in place (`__theme__/` pseudo-rels, containment-checked); semantic lights resolve against the host's zone map; `music: {query}` matches MA playlists with substring fallback; pack sections auto-merge into Play.
