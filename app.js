@@ -1,5 +1,17 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.53
+   RoomScape — Play & Design app (app.js)  v3.63
+   v3.63 (Phase 3c, RS-THEMES-UI): theme packs land in the app —
+   (a) Play cards whose id is namespaced (pack.mode) carry a small 🧩 badge
+   (title = pack id); (b) ⚙ Settings → System grows a "🧩 Theme packs" button
+   opening a sheet (openThemesSheet) that lists /api/themes: per pack —
+   name/author/version, mode count, ⚠ expandable missing-file list, errors in
+   red, warnings, ⇩ Export (plain download of /api/theme/export/<id>) — plus a
+   header "⇪ Import theme…" (static #themesImport file input → raw zip POST to
+   /api/theme/import; 409 → askConfirm replace → retry ?overwrite=1; success →
+   toast + repaint sheet + reloadProfilesLight, the boot()-shaped profile
+   refresh); (c) the Design strip context menu grows 🧩 Export pack for theme
+   modes (legacy modes get the same entry disabled-looking with a tooltip —
+   the pack builder will bring their export).
    v3.53 (Phase 2d): registry consolidation — VIZ_STYLES / PLAYLIST_DISPLAYS are
    now thin views over IE.VIZ_STYLES / IE.PLAYLIST_DISPLAYS (engine.js single
    source; the Sound Studio lane's '(panorama)' suffix derives from the pan
@@ -758,8 +770,10 @@
   }
   function pcardHTML(id) {
     var p = profiles[id], th = sceneThumb(p.scene);
+    var pk = id.indexOf('.') > 0 ? id.slice(0, id.indexOf('.')) : null;   /* Phase 3c: namespaced id = theme-pack mode */
     return '<div class="pcard" data-id="' + id + '"' + (th ? ' style="background-image:url(\'' + th.replace(/'/g, '%27') + '\')"' : '') + '>'
       + '<div class="shade"></div><span class="livebdg">LIVE</span>' + (isFav(id) ? '<span class="pfav">★</span>' : '')
+      + (pk ? '<span class="pbadge" title="Theme pack: ' + esc(pk) + '">🧩</span>' : '')
       + '<div style="position:relative;width:100%"><div class="nm">' + esc(p.name || id) + '</div><div class="ds">' + esc(p.ambience || '') + '</div></div>'
       + '<div class="pplay" title="Play this mode now">▶</div></div>';   // v2.44 (QW2): instant play — revives the launch ripple
   }
@@ -3269,6 +3283,11 @@
     var nDel = deletedIds().length;   /* v2.54: the bin lives here */
     m.innerHTML = '<button data-cx="dup">⧉ Duplicate</button>'
       + '<button data-cx="ren">✎ Rename…</button>'
+      /* Phase 3c: theme modes (namespaced pack.mode ids) export their whole pack as a zip;
+         legacy hand-built modes can't yet — the pack builder phase brings that. */
+      + (id.indexOf('.') > 0
+        ? '<button data-cx="exp" title="Download this mode’s theme pack (' + esc(id.slice(0, id.indexOf('.'))) + '.roomscape-theme.zip)">🧩 Export pack</button>'
+        : '<button data-cx="expno" title="Export for hand-built modes arrives with the pack builder" style="opacity:.45">🧩 Export pack</button>')
       + '<button data-cx="hide">' + (profiles[id].hidden ? '👁 Show in Play' : '🚫 Hide from Play') + '</button>'
       + '<button data-cx="del" class="dg">🗑 Delete…</button>'
       + (nDel ? '<button data-cx="bin" style="border-top:1px solid var(--line);border-radius:0 0 8px 8px">♻ Show deleted (' + nDel + ')</button>' : '');
@@ -3280,6 +3299,8 @@
         m.classList.remove('on');
         var act = b.dataset.cx;
         if (act === 'dup') duplicateMode(id);
+        else if (act === 'exp') exportThemePack(id.slice(0, id.indexOf('.')));   /* Phase 3c */
+        else if (act === 'expno') toast('Export for hand-built modes arrives with the pack builder');   /* Phase 3c */
         else if (act === 'ren') { askText('Rename mode', '', profiles[id].name || id, function (n) { profiles[id].name = n; if (id === curId) draft.name = n; persist().then(function () { renderStrip(); renderPlay(); renderNow(); toast('Renamed'); }); }); }   /* v2.54 */
         else if (act === 'hide') { profiles[id].hidden = !profiles[id].hidden; if (id === curId) draft.hidden = profiles[id].hidden; persist().then(function () { renderStrip(); renderPlay(); toast(profiles[id].hidden ? 'Hidden from Play — still editable here' : 'Shown in Play'); }); }
         else if (act === 'del') softDeleteMode(id);   /* v2.54: soft delete + undo */
@@ -4833,6 +4854,7 @@
       + '<button class="btn" id="gposters">▦ Make video thumbnails</button>'
       + '<button class="btn" id="greload">↻ Reload all frames</button>'
       + '<button class="btn" id="grestart">⟳ Restart Conductor</button>'
+      + '<button class="btn" id="gthemes">🧩 Theme packs</button>'   /* Phase 3c */
       + '<a class="btn gh" href="wall-test.html" target="_blank">Wall test ↗</a>'
       + '<a class="btn gh" href="api/health" target="_blank">Health ↗</a></div>'
       + '<div class="hint" style="margin-top:10px">Home Assistant: ' + (haRoom.configured ? 'connected' : 'not configured — see HA-SETUP.md') + ' · Conductor v' + ((health && health.version) || '?') + '</div></div>'
@@ -4869,11 +4891,99 @@
     var stp = $('#cfgstopall'); if (stp) stp.onclick = function () { post('/api/audio/stop', {}).then(function (r) { toast(r && r.ok ? '⏹ All sounds stopped' : 'Stop failed'); }); };   /* v3.41 */
     var esa = $('#edgesyncall'); if (esa) esa.onclick = function () { syncEdge(null); };
     var eca = $('#edgecleanall'); if (eca) eca.onclick = function () { cleanEdge(null); };
+    $('#gthemes').onclick = openThemesSheet;   /* Phase 3c */
     $('#grescan').onclick = function () { post('/api/rescan').then(function () { toast('Rescanning…'); return boot2(); }); };
     $('#gposters').onclick = function () { makeVideoPosters(); };
     $('#greload').onclick = function () { post('/api/reload', { frame: 'all' }).then(function (j) { toast('↻ Reload sent (' + j.clients + ' clients)'); }); };
     $('#grestart').onclick = function () { askConfirm('Restart the Conductor?', 'Frames reconnect in ~10–30 s.', 'Restart', function () { post('/api/restart').then(function () { toast('⟳ Restarting — back shortly'); }); }, true); };   /* v2.54 */
   }
+  /* ---------------- 🧩 Theme packs sheet (Phase 3c, RS-THEMES-UI) ----------------
+     One compact sheet over /api/themes (opened from ⚙ Settings → System). Import
+     posts the raw zip to /api/theme/import (409 → confirm → ?overwrite=1 retry);
+     Export is a plain <a> download of /api/theme/export/<id>. After an import the
+     profile set changed server-side, so reloadProfilesLight() re-pulls
+     /api/profiles the way boot() does and repaints strip + Play. */
+  function exportThemePack(packId) {
+    var a = D.createElement('a');
+    a.href = '/api/theme/export/' + encodeURIComponent(packId);
+    a.download = '';
+    D.body.appendChild(a); a.click(); a.remove();
+    toast('⇩ Exporting ' + packId + '…');
+  }
+  function reloadProfilesLight() {   // same fields boot() adopts from /api/profiles, without re-booting the whole app
+    return api('/api/profiles').then(function (r) {
+      profiles = r.profiles || {}; tagmap = r.tagmap || tagmap; settings = r.settings || settings;
+      window.__rsSettings = settings;
+      if (!profiles[curId]) selectMode(vids()[0], true);
+      renderStrip(); renderPlay(); renderNow();
+    });
+  }
+  function openThemesSheet() {
+    openSheet('<div class="shead"><h2>🧩 Theme packs</h2><div class="sp"></div>'
+      + '<button class="btn" id="thimport">⇪ Import theme…</button>'
+      + '<button class="btn gh" id="thclose">Close</button></div>'
+      + '<div class="sbody" id="themesSheet"><div class="hint">Loading theme packs…</div></div>');
+    $('#thclose').onclick = closeSheet;
+    $('#thimport').onclick = function () {
+      var inp = $('#themesImport'); if (!inp) return;
+      inp.value = '';
+      inp.onchange = function () { var f = inp.files && inp.files[0]; if (f) sendThemeZip(f, false); };
+      inp.click();
+    };
+    paintThemesSheet();
+  }
+  function paintThemesSheet() {
+    api('/api/themes').then(function (j) {
+      var el = $('#themesSheet'); if (!el) return;
+      var packs = (j && j.themes) || [];
+      if (!packs.length) {
+        el.innerHTML = '<div class="hint" style="text-align:center;padding:36px">No theme packs yet — Import a .zip above, or drop a pack folder into <b>themes/</b> and Rescan.</div>';
+        return;
+      }
+      el.innerHTML = packs.map(function (t) {
+        var miss = (t.missing || []).length, errs = t.errors || [], warns = t.warnings || [];
+        return '<div class="card" data-pack="' + esc(t.id) + '">'
+          + '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+          + '<div style="flex:1;min-width:180px"><b>🧩 ' + esc(t.name || t.id) + '</b> <span class="hint">v' + esc(String(t.version != null ? t.version : '?')) + (t.author ? ' · ' + esc(t.author) : '') + '</span>'
+          + '<div class="hint">' + (t.modes || []).length + ' mode' + ((t.modes || []).length === 1 ? '' : 's') + (t.kidSafe ? ' · kid-safe' : '') + '</div></div>'
+          + (miss ? '<button class="btn sm gh" data-thmiss="' + esc(t.id) + '" style="color:#e0b04a;border-color:#e0b04a55">⚠ ' + miss + ' missing</button>' : '')
+          + '<a class="btn sm" href="/api/theme/export/' + encodeURIComponent(t.id) + '" download>⇩ Export</a></div>'
+          + (errs.length ? '<div style="color:#e0655f;font-size:12.5px;line-height:1.5;margin-top:8px">' + errs.map(esc).join('<br>') + '</div>' : '')
+          + (warns.length ? '<div class="hint" style="color:#e0b04a;margin-top:6px">' + warns.map(esc).join('<br>') + '</div>' : '')
+          + (miss ? '<div class="hint" data-thmisslist="' + esc(t.id) + '" style="display:none;margin-top:8px;line-height:1.6">'
+              + (t.missing || []).map(esc).join('<br>')
+              + '<br><span style="color:var(--dim)">add these files to the theme pack — the wall shows a 🧩 placeholder until then</span></div>' : '')
+          + '</div>';
+      }).join('');
+      $$('#themesSheet [data-thmiss]').forEach(function (b) {
+        b.onclick = function () {
+          var l = $('#themesSheet [data-thmisslist="' + b.dataset.thmiss + '"]');
+          if (l) l.style.display = l.style.display === 'none' ? '' : 'none';
+        };
+      });
+    }).catch(function (e) {
+      var el = $('#themesSheet');
+      if (el) el.innerHTML = '<div class="hint">Could not load theme packs — ' + esc((e && e.message) || 'no response') + '</div>';
+    });
+  }
+  function sendThemeZip(f, overwrite) {
+    toast('⇪ Importing “' + f.name + '”…');
+    fetch('/api/theme/import' + (overwrite ? '?overwrite=1' : ''), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: f })
+      .then(function (r) { return r.json().then(function (j) { return { code: r.status, j: j }; }); })
+      .then(function (res) {
+        if (res.code === 409) {
+          askConfirm('Pack exists — replace?', 'A pack with this id is already installed. Replacing keeps the old copy in themes/.trash — nothing is deleted.', 'Replace', function () { sendThemeZip(f, true); });
+          return;
+        }
+        if (!res.j || !res.j.ok) { toast('Import failed — ' + ((res.j && res.j.error) || ('HTTP ' + res.code))); return; }
+        var miss = (res.j.missing || []).length;
+        toast('🧩 Imported ' + (res.j.pack || f.name) + (res.j.replaced ? ' (old copy in .trash)' : '') + (miss ? ' — ⚠ ' + miss + ' file(s) missing' : ' ✓'));
+        paintThemesSheet();
+        reloadProfilesLight();
+      })
+      .catch(function (e) { toast('Import failed — ' + ((e && e.message) || e)); });
+  }
+
   /* v1.43 make video thumbnails — the browser grabs a frame from each video and uploads it
      as the poster (no ffmpeg needed on the Conductor host). */
   async function makeVideoPosters() {

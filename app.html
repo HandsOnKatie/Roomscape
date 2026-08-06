@@ -161,6 +161,9 @@
   .pplay:hover{background:var(--gold);color:#1a1407;transform:scale(1.08)}
   /* v2.44 exec4: ★ favourite marker (long-press a card to toggle) */
   .pfav{position:absolute;top:8px;left:10px;font-size:15px;color:var(--gold2);text-shadow:0 1px 4px #000;z-index:2}
+  /* Phase 3c: 🧩 theme-pack badge on namespaced (pack.mode) cards; yields to the LIVE badge */
+  .pbadge{position:absolute;top:9px;right:12px;font-size:13px;text-shadow:0 1px 4px #000;z-index:2;opacity:.85;transition:opacity .3s var(--ease)}
+  .pcard.live .pbadge{opacity:0}
   /* v2.44 QW5: sticky at the bottom of the scrolling .view — with 133 modes the room
      controls were below the entire wall of cards; now cards scroll under them */
   #roomrow{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:1750px;margin:26px auto 0;padding:16px;border:1px solid var(--line);border-top:1px solid var(--line);border-radius:16px;background:rgba(15,17,22,.88);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
@@ -822,6 +825,9 @@
 <div id="ctxmenu"></div>
 <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
 <div class="toast" id="toast"></div>
+<!-- Phase 3c: 🧩 Theme packs — file picker for Settings → System → Theme packs → Import theme…
+     (static so the smoke test can canary the theme UI; the sheet itself is built by app.js openThemesSheet) -->
+<input type="file" id="themesImport" accept=".zip" hidden>
 
 <script src="engine.js"></script>
 <script src="fx.js"></script>

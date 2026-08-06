@@ -24,11 +24,12 @@
 - ✅ Router: dead blocks removed, `/api/upload` revived (pre-existing prod bug), 4 more blocks ported.
 - ➡ Carried to Phase 3+: remaining prependListener blocks that wrap functions or chain responses (VARIANTS+PLAYLISTS shim, RULES SOUND/EDIT middleware, SCENE DIMS, REVEAL REEL) — port only with a router middleware concept; Sound Studio dead VIZ_STYLES variable cleanup.
 
-## Phase 3 — Theme packs (target v0.5x–0.6x)
-- Pack loader (namespace ids, pack-relative media index, semantic-light resolution, MA music query flow).
-- `GET /api/theme/export/<id>` + `POST /api/theme/import` + app UI.
-- Missing-media placeholders.
-- Starter packs (hand-built, CC0/own media): At Rest, Ocean Depths, Fireside Tavern, Game Night, Party. Storm Watch ships as the build-it-yourself tutorial in THEMES.md.
+## Phase 3 — Theme packs ✅ CODE DONE in v0.40
+- ✅ Pack loader (namespaced dot ids, in-place media serving, semantic lights, MA music-query fallback, sections).
+- ✅ Export/import over zip (pure-node, .trash safety net) + app UI (Theme packs sheet, badges, ctx-menu export).
+- ✅ Missing-media placeholders (loader-flagged + generic onerror).
+- ⏳ **Starter packs — waiting on D** (hand-built per locked decision 3): At Rest, Ocean Depths (demo pack ships, needs real media), Fireside Tavern, Game Night, Party. Storm Watch = build-it-yourself tutorial in THEMES.md.
+- ➡ Later: export of Design-authored (non-pack) modes — needs media ref-walking of the host library ("pack builder").
 
 ## Phase 4 — First run & auth (target v0.9x → v1.00)
 - First-run wizard: room name → HA entity pick → frame layout with identify-flash → starter themes.

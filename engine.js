@@ -1,5 +1,9 @@
 /* ===================================================================
-   The Immersion Engine — shared core (engine.js)  v0.89
+   The Immersion Engine — shared core (engine.js)  v0.90
+   (v0.90 Phase 3c: missing theme-pack media [__missing__/<pack>/<rel> refs from
+   RS-THEMES] render a labelled 🧩 placeholder panel [panelMissing] on the
+   engine render paths [renderFrame pano/portrait] instead of a broken
+   background — simpler sibling of the fx.js v1.61 placeholder)
    (v0.89 Phase 2d: registry consolidation — IE.KINDS single frame-kind registry
    [FRAMEKINDS + KIND_ICON now derived, app inspector order via appOrder];
    IE.VIZ_STYLES {id,label,pan} + IE.PLAYLIST_DISPLAYS {id,label,desc} move here
@@ -368,9 +372,12 @@
 
     container.className = 'ie-frame' + (kind === 'off' ? ' off' : '');
     var img = state.frameImages && state.frameImages[idx];   // real photo from the Conductor, if any
+    var mref = missingRef(img);                              // v0.90 (Phase 3c): theme pack declared it, doesn't ship it
     var inner = '';
     if (kind === 'pano') {
-      if (img) {
+      if (mref) {
+        inner += panelMissing(mref);
+      } else if (img) {
         // one wide image stretched across this wall's N frames; each frame shows its slice
         inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background-image:url(\'' + img + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
       } else {
@@ -387,7 +394,9 @@
     } else if (kind === 'clock') {
       inner += panelClock(g, m);
     } else if (kind === 'portrait') {
-      if (img) {
+      if (mref) {
+        inner += panelMissing(mref);   /* v0.90 (Phase 3c) */
+      } else if (img) {
         inner += '<div class="ie-pano" style="left:0;width:100%;background-image:url(\'' + img + '\');background-size:cover;background-position:center"></div>';
         if (state.captions) inner += '<div class="ie-cap">' + g.desc + '</div>';
       } else {
@@ -432,6 +441,24 @@
   function panelPortrait(g) {
     return '<div class="ie-panel" style="justify-content:center;align-items:center"><div style="font-size:18vmin">' + g.glyph + '</div>'
       + '<div class="ie-sub" style="color:' + g.accent + ';margin-top:2vmin">Narrator</div></div>';
+  }
+  /* v0.90 (Phase 3c, RS-THEMES): a theme pack declared this file but doesn't
+     ship it — the conductor sends a __missing__/<pack>/<rel> ref whose /media
+     URL 404s. Design-canvas paths get this simpler labelled panel (fx.js
+     v1.61 carries the full version for the TVs); it fills the same box. */
+  function missingRef(url) {                     // -> '<pack>/<rel>' or null
+    if (!url) return null;
+    var u = String(url); try { u = decodeURIComponent(u); } catch (e) {}
+    var ix = u.indexOf('__missing__/');
+    return ix < 0 ? null : u.slice(ix + 12);
+  }
+  function panelMissing(ref) {
+    var parts = String(ref).split('/');
+    var rel = (parts.length > 1 ? parts.slice(1).join('/') : String(ref)).replace(/[&<>"]/g, '');
+    return '<div class="ie-panel" style="justify-content:center;align-items:center;background:#101218;text-align:center">'
+      + '<div style="font-size:11vmin;line-height:1">🧩</div>'
+      + '<div class="ie-ph" style="font-size:3.6vmin;margin:1.5vmin 0 0;max-width:84%;word-break:break-word">' + rel + '</div>'
+      + '<div class="ie-sub" style="font-size:2.4vmin">add this file to the theme pack</div></div>';
   }
   /* Phase 2d: lightweight photos stand-in — the real slideshow is drawn on the
      TVs by fx.js (renderPhotos into .ie-photos); engine paths get a simple

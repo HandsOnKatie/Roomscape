@@ -128,6 +128,13 @@ licence, attribution if the licence demands it. CC0/own-work keeps life simple.
 Zip the folder, share the zip. Import via the app (Play → Import theme) or by
 unzipping into `themes/` and hitting Rescan.
 
+In the app this lives under **⚙ Settings → System → 🧩 Theme packs**: the sheet
+lists every installed pack (name, author, version, mode count, any missing
+files or manifest errors), **⇩ Export** downloads any pack as
+`<pack>.roomscape-theme.zip`, and **⇪ Import theme…** takes a pack zip
+straight from disk. Importing a pack that already exists asks before
+replacing — the old copy is moved to `themes/.trash`, never deleted.
+
 ## Export & import API
 
 The conductor round-trips packs as a single `<pack>.roomscape-theme.zip`

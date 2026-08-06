@@ -1,5 +1,18 @@
 /* ===================================================================
-   The Immersion Engine — transition & effects layer (fx.js)  v1.51
+   The Immersion Engine — transition & effects layer (fx.js)  v1.61
+   v1.61 (Phase 3c, RS-THEMES): missing-media placeholders — a theme pack's
+   declared-but-absent file arrives as a /media/__missing__%2F<pack>%2F<rel>
+   ref whose URL 404s. missingRef()/missingPanel() (beside the Phase 2d
+   unknown-kind placeholder, same .ie-panel styling) render a labelled 🧩
+   panel — pack-relative filename + "add this file to the theme pack" — in
+   the same box, hooked at mediaEl (pano/portrait scenes) and bgLayerHTML
+   (viz/playlist backgrounds). Plus a generic delegated error handler
+   (capture phase, so <source>-child errors are seen too): any .ie-pano /
+   .ie-bgv video or img that errors AFTER load (file deleted, share gone)
+   swaps to a subtler placeholder (filename + "missing media") in the same
+   box; .ie-ovl overlays and .ie-efx effect videos just hide so the scene
+   beneath stays visible. Elements with their own onerror (preview posters,
+   album art) keep their own fallback.
    v1.51 (Phase 2d): registry-drift hardening — buildLayerHTML renders a
    labelled placeholder for unknown frame kinds (was a blank frame);
    RS-MUSIC-VIZ cross-checks its reg() renderers against IE.VIZ_STYLES at
@@ -394,6 +407,8 @@
   function isVid(u) { return !!(u && /\.(mp4|webm|m4v|mov)$/i.test(u)); }
   function wallW(wsz) { return 'width:' + ((wsz || 3) * 100) + '%;'; }   /* v1.40: pano strip spans the whole wall (N frames, not always 3) */
   function mediaEl(url, col, solo, fit, wsz) {   // solo=true: render whole image; false: wall-split slice. v1.18: fit = cover|contain|stretch|width|height (solo only)
+    var mref = missingRef(url);                  /* v1.61 (Phase 3c): theme pack declared this file but doesn't ship it */
+    if (mref) return missingPanel(mref);
     var portrait = solo;
     if (isVid(url)) {
       var vf = !portrait ? null : (fit === 'stretch' ? 'fill' : (fit === 'contain' || fit === 'width' || fit === 'height') ? 'contain' : 'cover');
@@ -429,6 +444,58 @@
     v.onplaying = function () { clearTimeout(to); try { p.remove(); } catch (_) {} };
     p.parentNode.insertBefore(v, p);
   });
+  /* v1.61 (Phase 3c, RS-THEMES): MISSING-MEDIA PLACEHOLDERS.
+     A theme pack file that's declared in theme.json but absent on disk gets the
+     pseudo-rel __missing__/<pack>/<rel>; its /media URL 404s. Instead of a black
+     frame / broken element we render a labelled panel in the SAME box (no layout
+     thrash) — the sibling of the Phase 2d unknown-kind placeholder below, same
+     .ie-panel / .ie-ph / .ie-sub styling. */
+  function missingRef(url) {                     // -> '<pack>/<rel>' or null
+    if (!url) return null;
+    var u = String(url); try { u = decodeURIComponent(u); } catch (e) {}
+    var ix = u.indexOf('__missing__/');
+    return ix < 0 ? null : u.slice(ix + 12);
+  }
+  function missingPanel(ref) {                   // full labelled placeholder (theme gap)
+    var parts = String(ref).split('/');
+    var rel = (parts.length > 1 ? parts.slice(1).join('/') : String(ref)).replace(/[&<>"]/g, '');
+    return '<div class="ie-panel" style="position:absolute;inset:0;justify-content:center;align-items:center;gap:1.8cqmin;background:#101218;text-align:center">'
+      + '<div style="font-size:9cqmin;line-height:1">🧩</div>'
+      + '<div class="ie-ph" style="font-size:3.4cqmin;margin:0;max-width:84%;word-break:break-word">' + rel + '</div>'
+      + '<div class="ie-sub" style="font-size:2.1cqmin">add this file to the theme pack</div></div>';
+  }
+  /* v1.61 generic media-error fallback — covers files that vanish AFTER load
+     (deleted from the share, pack replaced), not just theme gaps. Delegated in
+     the CAPTURE phase so <source>-child errors (which never bubble to the
+     <video> — the v1.07 lesson) are seen too. Scene media (.ie-pano) and
+     viz/playlist backgrounds (.ie-bgv) swap to a subtler placeholder in the
+     same box; overlays (.ie-ovl) and effect loops (.ie-efx video) simply hide
+     so the scene beneath stays visible. Elements managing their own fallback
+     via onerror (preview posters, album art) are left alone. */
+  D.addEventListener('error', function (e) {
+    var t = e.target;
+    if (!t || !t.tagName) return;
+    if (t.tagName === 'SOURCE') t = t.parentNode;
+    if (!t || (t.tagName !== 'VIDEO' && t.tagName !== 'IMG')) return;
+    if (typeof t.onerror === 'function') return;                 // element has its own fallback
+    if (t.__iePhSwapped) return;
+    var cl = t.classList;
+    if (cl && cl.contains('ie-ovl')) { t.style.display = 'none'; return; }
+    var inEfx = t.closest && t.closest('.ie-efx');
+    if (inEfx) { t.style.display = 'none'; return; }
+    if (!cl || !(cl.contains('ie-pano') || cl.contains('ie-bgv'))) return;
+    t.__iePhSwapped = 1;
+    var src = t.currentSrc || t.src || (t.querySelector && (t.querySelector('source') || {}).src) || '';
+    var name = String(src).split('/').pop(); try { name = decodeURIComponent(name); } catch (err) {}
+    var d = D.createElement('div');
+    d.className = t.className;                                   // same box: keep class + inline positioning
+    d.style.cssText = t.style.cssText + ';display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.2cqmin;background:#101218;color:#8a8d99;font:500 2.4cqmin sans-serif;text-align:center';
+    d.innerHTML = '<div style="font-size:5cqmin;line-height:1;opacity:.8">🧩</div>'
+      + '<div style="max-width:82%;word-break:break-word">' + name.replace(/[&<>"]/g, '') + '</div>'
+      + '<div style="font-size:1.9cqmin;letter-spacing:.12em;text-transform:uppercase;color:#6a6d79">missing media</div>';
+    try { if (t.tagName === 'VIDEO') { t.pause && t.pause(); } } catch (err2) {}
+    try { if (t.parentNode) t.parentNode.replaceChild(d, t); } catch (err3) {}
+  }, true);
   function buildLayerHTML(state, idx) {
     var g0 = IE.GAMES[state.game] || IE.GAMES.dining, m = IE.MODES[state.mode] || IE.MODES.dining;
     var kind = (state.frames && state.frames[idx]) || 'pano', col = IE.slotOf(idx), wsz = IE.wallSizeOf(idx);   /* v1.40: wall math from IE.LAYOUT */
@@ -469,6 +536,8 @@
   /* v1.06 background layer shared by the viz + playlist content types (image or video + dim) */
   function bgLayerHTML(bg) {
     if (!bg || !bg.url) return '';
+    var mref = missingRef(bg.url);               /* v1.61 (Phase 3c): missing theme bg → labelled panel, not a black stage */
+    if (mref) return missingPanel(mref);
     var dim = (bg.dim != null ? bg.dim : 0.35);
     var media = bg.video
       ? '<video class="ie-bgv" src="' + bg.url + '" autoplay muted loop playsinline></video>'

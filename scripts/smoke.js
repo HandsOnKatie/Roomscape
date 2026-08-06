@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.4 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.5 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.5 (Phase 3c, RS-THEMES-UI): one cheap regression canary — the served app
+   page must carry the theme-sheet markup hook (the static id="themesImport"
+   file input that Settings → Theme packs → Import theme… clicks). No browser
+   is booted; a grep of GET / suffices.
    v1.4 (Phase 3b, RS-THEME-ZIP): export/import over zip — boot 1 now points
    THEMES_DIR at a TMP COPY of the repo's themes/ (import/overwrite writes
    .trash + replaces the pack; the repo tree must stay byte-identical).
@@ -139,6 +143,9 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
 
     const app = await get('/');
     check('app page serves', app.code === 200 && app.body.length > 1000, 'code ' + app.code);
+    // v1.5 (Phase 3c): theme-UI canary — the static import input the theme sheet clicks
+    check('app page carries the theme-packs markup hook (id="themesImport")',
+      app.body.indexOf('id="themesImport"') >= 0, 'themesImport input missing from served app.html');
 
     const frame = await get('/frame.html?frame=L1');
     check('frame page serves', frame.code === 200, 'code ' + frame.code);
