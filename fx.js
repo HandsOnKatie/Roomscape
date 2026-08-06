@@ -1,5 +1,11 @@
 /* ===================================================================
-   The Immersion Engine — transition & effects layer (fx.js)  v1.50
+   The Immersion Engine — transition & effects layer (fx.js)  v1.51
+   v1.51 (Phase 2d): registry-drift hardening — buildLayerHTML renders a
+   labelled placeholder for unknown frame kinds (was a blank frame);
+   RS-MUSIC-VIZ cross-checks its reg() renderers against IE.VIZ_STYLES at
+   startup (ids + pan flags, console.warn only) and the preview module checks
+   FAM coverage; RS-PLAYLIST falls back to 'nowplaying' for unknown display
+   ids (warn once) instead of echoing the raw id.
    v1.50 (Phase 2c): party-game wall roles from the layout — quiz A–D corners
    come from the corners role (layout.roles), rules/scores/game screens from
    wall position (IE.slotOf/IE.wallSizeOf: slot 0 = rules, last slot = scores,
@@ -450,7 +456,11 @@
     if (kind === 'clock') return clockPanel(g0, state);
     if (kind === 'viz') return vizStageHTML(state, idx);           // v1.06: 🎶 stage (bg beneath the RS-MUSIC-VIZ canvas)
     if (kind === 'playlist') return playlistStageHTML(state, idx); // v1.06: ♪ now-playing / album-art display host
-    return '';
+    /* Phase 2d: unknown kind → labelled placeholder instead of a silently blank
+       frame (a registry/renderer drift used to render overlays over nothing). */
+    return '<div class="ie-panel" style="justify-content:center;align-items:center">'
+      + '<div class="ie-ph">' + String(kind).replace(/[&<>"]/g, '') + '</div>'
+      + '<div class="ie-sub">unknown frame kind</div></div>';
   }
   /* v1.06 true only on a real kiosk frame page (frame.html?frame=L1…). In the app's
      Design canvas there's no ?frame=, so the live animators (RS-MUSIC-VIZ / RS-PLAYLIST)
@@ -2514,6 +2524,21 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
     cx.restore();
   });
 
+  /* Phase 2d dev-check (drift alarm — console.warn only, no behaviour change):
+     the registered renderers and IE.VIZ_STYLES (engine.js, the app's catalogue)
+     must stay in lockstep — ids AND pan flags. reg() is the ground truth for pan. */
+  try {
+    var _decl = (window.IE && IE.VIZ_STYLES) || [];
+    _decl.forEach(function (s) {
+      if (s.id === 'shuffle') return;   // virtual entry — rotates the real styles
+      if (!STYLES[s.id]) console.warn('[RS-MUSIC-VIZ] IE.VIZ_STYLES lists "' + s.id + '" but no renderer is registered');
+      else if (!!s.pan !== !!STYLES[s.id].pan) console.warn('[RS-MUSIC-VIZ] pan flag mismatch for "' + s.id + '": IE.VIZ_STYLES says ' + !!s.pan + ', reg() says ' + !!STYLES[s.id].pan);
+    });
+    Object.keys(STYLES).forEach(function (id) {
+      if (!_decl.some(function (s) { return s.id === id; })) console.warn('[RS-MUSIC-VIZ] renderer "' + id + '" is not in IE.VIZ_STYLES — the app cannot offer it');
+    });
+  } catch (e) {}
+
   /* ---------------- mount / render loop ---------------- */
   function mount() {
     if (wrap) return;
@@ -2628,6 +2653,12 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
     host = findHost();
     if (stKind !== 'playlist' || !host || !cfg) { sig = ''; cvp = cxp = null; return; }
     var disp = cfg.display || 'nowplaying';
+    /* Phase 2d: unknown display ids fall back to nowplaying (the raw id used to
+       be echoed straight into the class / renderer picker). Warn once per id. */
+    if (!((window.IE && IE.PLAYLIST_DISPLAYS) || []).some(function (d) { return d.id === disp; })) {
+      if (render._warned !== disp) { render._warned = disp; console.warn('[RS-PLAYLIST] unknown display "' + disp + '" — falling back to nowplaying'); }
+      disp = 'nowplaying';
+    }
     var s = disp + '|' + np.track + '|' + np.artist + '|' + np.artUrl;
     if (s === sig && host.firstChild) return;   // only rebuild on real change
     sig = s;
@@ -2707,6 +2738,14 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
     fountain: 'particles', fireflies: 'particles', aurora: 'ribbons', pond: 'ripples', vinyl: 'vinyl',
     mandala: 'mandala', fireplace: 'fire', beatsweep: 'sweep', constellation: 'stars' };
   var SHUF = ['bars', 'wave', 'particles', 'ribbons', 'ripples', 'mandala', 'vinyl', 'fire', 'stars', 'sweep'];
+  /* Phase 2d dev-check (drift alarm — console.warn only): every style in the
+     catalogue should have a preview family here, or its Design-canvas preview
+     silently falls back to 'bars'. */
+  try {
+    ((window.IE && IE.VIZ_STYLES) || []).forEach(function (s) {
+      if (s.id !== 'shuffle' && !FAM[s.id]) console.warn('[RS-VIZ-PREVIEW] style "' + s.id + '" has no FAM preview family — preview falls back to bars');
+    });
+  } catch (e) {}
   function specOf(val) {
     var stops = (window.IE && IE.palStops) ? IE.palStops(val) : null;
     if (stops) return { stops: stops };

@@ -1,5 +1,12 @@
 /* ===================================================================
-   The Immersion Engine — shared core (engine.js)  v0.88  (v0.88 Phase 2c: layout ROLES — IE.deriveRoles/IE.roleFrames + LAYOUT.roles always populated; setLayout also adopts roles/orientation/atRest from /api/layout; IE.ATREST replaces the 'dining' at-rest literal in defaultState/halo/startGame/panic/labels)
+   The Immersion Engine — shared core (engine.js)  v0.89
+   (v0.89 Phase 2d: registry consolidation — IE.KINDS single frame-kind registry
+   [FRAMEKINDS + KIND_ICON now derived, app inspector order via appOrder];
+   IE.VIZ_STYLES {id,label,pan} + IE.PLAYLIST_DISPLAYS {id,label,desc} move here
+   as the single catalogues [pan flags mirror fx.js reg() ground truth]; FIX:
+   renderFrame gained the missing 'photos' branch [panelPhotos]; the legacy
+   deck's kind-cycle help text is generated from the registry)
+   (v0.88 Phase 2c: layout ROLES — IE.deriveRoles/IE.roleFrames + LAYOUT.roles always populated; setLayout also adopts roles/orientation/atRest from /api/layout; IE.ATREST replaces the 'dining' at-rest literal in defaultState/halo/startGame/panic/labels)
    (v0.78: N-frame layouts — IE.LAYOUT + IE.setLayout(l) adopt the conductor's /api/layout; IE.wallKeyOf/wallFramesOf/slotOf/wallSizeOf replace all wall-of-3 math; FRAME_IDS mutated in place so old references stay live; pano width set per wall size)
    (v0.77: WS liveness watchdog — client ping every 20s + force-close after 90s silence so a silently-dead TCP connection re-enters the reconnect loop instead of freezing the frame [L2/Goldfinger incident 2026-07-24]; WebSocket constructor throw now re-arms retry instead of permanently killing the loop)
    (v0.76: 'viz' + 'playlist' frame kinds — music visualiser & now-playing become Wall content types; IE.VIZ_PALETTES + palStops/palAt/palCss shared colour palettes (gold, VU, sunset, ocean, aurora, fire, ice, neon, rainbow, viridis, plasma, magma); social dispatch → IE.onSocial; captions opt-in; frame ids in hello; '_' profiles hidden)
@@ -69,8 +76,25 @@
     return s < 0 ? 0 : s;
   }
   function wallSizeOf(idx) { return (LAYOUT.walls[wallKeyOf(idx)] || []).length || 1; }
-  var FRAMEKINDS = ['pano', 'score', 'map', 'portrait', 'photos', 'viz', 'playlist', 'clock', 'off'];
-  var KIND_ICON = { pano: '', score: '▤', map: '◰', portrait: '☻', photos: '❏', viz: '🎶', playlist: '♪', clock: '◷', off: '○' };
+  /* Phase 2d: the single frame-kind registry. Array order = the legacy deck's
+     click-cycle order; appOrder = the Design app inspector's historical tile
+     order (pano, portrait, photos, viz, playlist, score, map, clock, off).
+     icon = the engine wall-grid glyph, appIcon = the inspector tile glyph.
+     FRAMEKINDS + KIND_ICON are DERIVED below so every existing consumer and
+     exported name keeps working unchanged. */
+  var KINDS = [
+    { id: 'pano',     icon: '',   appIcon: '🖼', label: 'Panorama',  appOrder: 0 },
+    { id: 'score',    icon: '▤',  appIcon: '▤',  label: 'Score',     appOrder: 5 },
+    { id: 'map',      icon: '◰',  appIcon: '◰',  label: 'Map',       appOrder: 6 },
+    { id: 'portrait', icon: '☻',  appIcon: '🧍', label: 'Portrait',  appOrder: 1 },
+    { id: 'photos',   icon: '❏',  appIcon: '❏',  label: 'Photos',    appOrder: 2 },
+    { id: 'viz',      icon: '🎶', appIcon: '🎶', label: 'Music Viz', appOrder: 3 },
+    { id: 'playlist', icon: '♪',  appIcon: '♪',  label: 'Playlist',  appOrder: 4 },
+    { id: 'clock',    icon: '◷',  appIcon: '◷',  label: 'Clock',     appOrder: 7 },
+    { id: 'off',      icon: '○',  appIcon: '○',  label: 'Off',       appOrder: 8 }
+  ];
+  var FRAMEKINDS = KINDS.map(function (k) { return k.id; });                       /* derived — click-cycle order */
+  var KIND_ICON = {}; KINDS.forEach(function (k) { KIND_ICON[k.id] = k.icon; });   /* derived — wall-grid glyphs */
   /* v0.76 shared colour palettes for the 🎶 Music Viz content type. Each is a set of
      gradient stops (low→high). Curated tones: a VU meter (green·amber·red as requested),
      warm/cool naturals, neon, full rainbow, and the perceptually-uniform matplotlib maps
@@ -110,6 +134,40 @@
     if (colorVal && colorVal !== 'auto' && String(colorVal).indexOf('pal:') !== 0) return colorVal; // solid custom
     var s = palStops(colorVal); var m = palAt(s, 0.72); return 'rgb(' + m[0] + ',' + m[1] + ',' + m[2] + ')';
   }
+
+  /* Phase 2d: single 🎶 Music Viz style catalogue. pan:true = panorama styles —
+     these flags mirror fx.js RS-MUSIC-VIZ reg(id, isPanorama, fn), which is the
+     ground truth (a startup dev-check in fx.js warns on drift). 'shuffle' is a
+     virtual entry (rotates through the real styles), so it has no renderer. */
+  var VIZ_STYLES = [
+    { id: 'cathedral',     label: 'Cathedral Bars',       pan: false },
+    { id: 'ribbon',        label: 'Waveform Ribbon',      pan: false },
+    { id: 'fountain',      label: 'Particle Fountain',    pan: false },
+    { id: 'aurora',        label: 'Aurora Veils',         pan: false },
+    { id: 'pond',          label: 'Ripple Pond',          pan: false },
+    { id: 'vinyl',         label: 'Vinyl & VU',           pan: false },
+    { id: 'mandala',       label: 'Kaleidoscope Mandala', pan: false },
+    { id: 'fireflies',     label: 'Firefly Swarm',        pan: false },
+    { id: 'skyline',       label: 'Neon Skyline',         pan: false },
+    { id: 'fireplace',     label: 'Reactive Fireplace',   pan: false },
+    { id: 'wave',          label: '🌊 Great Wave',        pan: true  },
+    { id: 'stadium',       label: 'Stadium Spectrum',     pan: true  },
+    { id: 'beatsweep',     label: 'Beat Sweep',           pan: true  },
+    { id: 'constellation', label: 'Constellation Room',   pan: true  },
+    { id: 'shuffle',       label: '🔀 Shuffle styles',    pan: false }
+  ];
+
+  /* Phase 2d: single ♪ Playlist display catalogue (renderers: fx.js RS-PLAYLIST). */
+  var PLAYLIST_DISPLAYS = [
+    { id: 'nowplaying', label: 'Now-playing card', desc: 'Big album art + track / artist / progress' },
+    { id: 'queue',      label: 'Animated queue',   desc: 'Album art plus the upcoming tracks scrolling' },
+    { id: 'artviz',     label: 'Art + subtle viz', desc: 'Album-art background with a light reactive overlay' },
+    { id: 'vinyl',      label: 'Spinning vinyl',   desc: 'Album art on a turning record with a tonearm' },
+    { id: 'coverflow',  label: 'Cover flow',       desc: 'Album covers gliding past in perspective' },
+    { id: 'spectrum',   label: 'Spectrum card',    desc: 'Now-playing card fronted by a reactive spectrum' },
+    { id: 'lyricstrip', label: 'Lyric strip',      desc: 'Big title/artist typography that pulses to the beat' },
+    { id: 'collage',    label: 'Art collage',      desc: 'A living wall of recent album covers' }
+  ];
 
   /* Community release: the built-in registries ship with only the at-rest 'dining'
      entry. Real modes come from the Conductor's profiles (see hydrateGames below);
@@ -335,6 +393,8 @@
       } else {
         inner += panelPortrait(g);
       }
+    } else if (kind === 'photos') {
+      inner += panelPhotos(g);   /* Phase 2d: branch was missing — a photos frame on an engine-only path rendered overlays over nothing */
     } else if (kind === 'viz') {
       inner += panelViz(g, state, idx);
     } else if (kind === 'playlist') {
@@ -372,6 +432,16 @@
   function panelPortrait(g) {
     return '<div class="ie-panel" style="justify-content:center;align-items:center"><div style="font-size:18vmin">' + g.glyph + '</div>'
       + '<div class="ie-sub" style="color:' + g.accent + ';margin-top:2vmin">Narrator</div></div>';
+  }
+  /* Phase 2d: lightweight photos stand-in — the real slideshow is drawn on the
+     TVs by fx.js (renderPhotos into .ie-photos); engine paths get a simple
+     gallery placeholder in the same style as the other panels. */
+  function panelPhotos(g) {
+    var cells = '';
+    for (var i = 0; i < 4; i++) cells += '<div style="background:' + g.pano + ';border:1px solid #0a0b0f;border-radius:4px;opacity:' + (0.35 + 0.12 * i) + '"></div>';
+    return '<div class="ie-panel" style="justify-content:center"><div class="ie-ph" style="color:' + g.accent + '">❏ PHOTOS</div>'
+      + '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2vmin;max-height:52%">' + cells + '</div>'
+      + '<div class="ie-sub" style="margin-top:2vmin">Album slideshow</div></div>';
   }
   /* v0.76 design-preview stand-ins for the two music content types (the real
      audio-reactive art is drawn on the TVs by fx.js RS-MUSIC-VIZ). */
@@ -573,7 +643,7 @@
     +   '<div class="ie-pane" data-pane="sound"><div class="ie-zt">Audio mixer — four layers + master</div><div class="ie-mixer" data-mixer></div>'
     +     '<div class="ie-np"><div data-npt>Silent</div><div class="ie-sp"></div><div style="color:var(--ink-faint)" data-npa>Ambience: —</div></div></div>'
     +   '<div class="ie-pane" data-pane="wall"><div class="ie-zt">Wall layout — tap a frame to change what it shows</div><div class="ie-wgrid" data-wgrid></div>'
-    +     '<div style="font-size:10.5px;color:var(--ink-faint);margin-top:10px">Frames are grouped by wall (see the id badges) · cycle: Panorama → Score → Map → Portrait → Clock → Off</div></div>'
+    +     '<div style="font-size:10.5px;color:var(--ink-faint);margin-top:10px">Frames are grouped by wall (see the id badges) · cycle: ' + KINDS.map(function (k) { return k.label; }).join(' → ') + '</div></div>'   /* Phase 2d: list generated from the registry (was a stale 6-kind literal) */
     +   '<div class="ie-pane" data-pane="phase"><div class="ie-zt">Game phase</div><div class="ie-tl" data-tl></div>'
     +     '<div class="ie-pcs"><button class="ie-pb" data-prev>‹ Previous</button><button class="ie-pb primary" data-next>Advance phase ›</button></div></div>'
     +   '<div class="ie-pane" data-pane="style"></div>'
@@ -862,7 +932,9 @@
     FRAME_IDS: FRAME_IDS, LAYOUT: LAYOUT, setLayout: setLayout,   /* v0.78 */
     wallKeyOf: wallKeyOf, wallFramesOf: wallFramesOf, slotOf: slotOf, wallSizeOf: wallSizeOf,
     ATREST: ATREST, deriveRoles: deriveRoles, roleFrames: roleFrames,   /* Phase 2c (IE.ATREST is refreshed by setLayout) */
-    FRAMEKINDS: FRAMEKINDS, GAMES: GAMES, GAME_ORDER: GAME_ORDER,
+    KINDS: KINDS, FRAMEKINDS: FRAMEKINDS, KIND_ICON: KIND_ICON,   /* Phase 2d: KINDS is the registry; FRAMEKINDS/KIND_ICON derived */
+    VIZ_STYLES: VIZ_STYLES, PLAYLIST_DISPLAYS: PLAYLIST_DISPLAYS, /* Phase 2d: single style/display catalogues */
+    GAMES: GAMES, GAME_ORDER: GAME_ORDER,
     MODES: MODES, MODE_ORDER: MODE_ORDER, LIGHT_SCENES: LIGHT_SCENES, ZONES: ZONES, CHANNELS: CHANNELS,
     defaultState: defaultState, renderFrame: renderFrame, buildControlDeck: buildControlDeck,
     createBus: createBus, toast: toast, ensureStyles: ensureStyles, frameIndex: frameIndex,

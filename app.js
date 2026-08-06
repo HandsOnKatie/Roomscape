@@ -1,5 +1,10 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.52
+   RoomScape — Play & Design app (app.js)  v3.53
+   v3.53 (Phase 2d): registry consolidation — VIZ_STYLES / PLAYLIST_DISPLAYS are
+   now thin views over IE.VIZ_STYLES / IE.PLAYLIST_DISPLAYS (engine.js single
+   source; the Sound Studio lane's '(panorama)' suffix derives from the pan
+   flag); the frame inspector's content-type tiles build from IE.KINDS
+   (appOrder keeps the historical tile order).
    v3.52 (Phase 2c): layout ROLES + configurable at-rest id + TV quirk map —
    party-game mockups/guesser TV, cue-card default frame, rules SEC map and
    rules-sound segments all flow from layout.roles (primary/centers/corners)
@@ -395,21 +400,11 @@
   var phaseSel = null;               // v2.0 phase being edited in Design (null = base mode)
   var playCat = 'all';               // v2.0 Play section filter
   /* v2.32: 🎶 Music Visualiser + ♪ Playlist are per-frame Wall content types.
-     Style/display catalogues live here (single source of truth for the inspector). */
-  var VIZ_STYLES = [['cathedral', 'Cathedral Bars'], ['ribbon', 'Waveform Ribbon'], ['fountain', 'Particle Fountain'],
-    ['aurora', 'Aurora Veils'], ['pond', 'Ripple Pond'], ['vinyl', 'Vinyl & VU'], ['mandala', 'Kaleidoscope Mandala'],
-    ['fireflies', 'Firefly Swarm'], ['skyline', 'Neon Skyline'], ['fireplace', 'Reactive Fireplace'],
-    ['wave', '🌊 Great Wave'], ['stadium', 'Stadium Spectrum'], ['beatsweep', 'Beat Sweep'], ['constellation', 'Constellation Room'],
-    ['shuffle', '🔀 Shuffle styles']];
-  var PLAYLIST_DISPLAYS = [
-    ['nowplaying', 'Now-playing card', 'Big album art + track / artist / progress'],
-    ['queue', 'Animated queue', 'Album art plus the upcoming tracks scrolling'],
-    ['artviz', 'Art + subtle viz', 'Album-art background with a light reactive overlay'],
-    ['vinyl', 'Spinning vinyl', 'Album art on a turning record with a tonearm'],
-    ['coverflow', 'Cover flow', 'Album covers gliding past in perspective'],
-    ['spectrum', 'Spectrum card', 'Now-playing card fronted by a reactive spectrum'],
-    ['lyricstrip', 'Lyric strip', 'Big title/artist typography that pulses to the beat'],
-    ['collage', 'Art collage', 'A living wall of recent album covers']];
+     Phase 2d: the catalogues moved to engine.js (IE.VIZ_STYLES / IE.PLAYLIST_DISPLAYS,
+     single source of truth) — these are thin [id, label(, desc)] views for the
+     inspector's existing tuple-shaped consumers. */
+  var VIZ_STYLES = (IE.VIZ_STYLES || []).map(function (s) { return [s.id, s.label]; });
+  var PLAYLIST_DISPLAYS = (IE.PLAYLIST_DISPLAYS || []).map(function (d) { return [d.id, d.label, d.desc]; });
   function defVizCfg() { return { style: 'cathedral', ori: 'portrait', color: 'auto', sens: 1, nowPlaying: true, shuffleMin: 5, bg: null }; }
   function defPlaylistCfg() { return { display: 'nowplaying', ori: 'portrait', color: 'auto', sens: 1, bg: null }; }
 
@@ -3935,7 +3930,11 @@
           + '<label class="fld"><span>Dim <b style="color:var(--gold2)">' + Math.round((bg.dim != null ? bg.dim : 0.35) * 100) + '%</b></span><input type="range" data-bgdim="' + ns + '" min="0" max="90" value="' + Math.round((bg.dim != null ? bg.dim : 0.35) * 100) + '"></label></div>') : '');
   }
   function frameInspector() {
-    var kinds = [{ v: 'pano', ic: '🖼', l: 'Panorama' }, { v: 'portrait', ic: '🧍', l: 'Portrait' }, { v: 'photos', ic: '❏', l: 'Photos' }, { v: 'viz', ic: '🎶', l: 'Music Viz' }, { v: 'playlist', ic: '♪', l: 'Playlist' }, { v: 'score', ic: '▤', l: 'Score' }, { v: 'map', ic: '◰', l: 'Map' }, { v: 'clock', ic: '◷', l: 'Clock' }, { v: 'off', ic: '○', l: 'Off' }];
+    /* Phase 2d: tiles from the single registry (engine.js IE.KINDS); appOrder
+       preserves this inspector's historical order (pano, portrait, photos, viz,
+       playlist, score, map, clock, off) — NOT the deck's click-cycle order. */
+    var kinds = (IE.KINDS || []).slice().sort(function (a, b) { return (a.appOrder || 0) - (b.appOrder || 0); })
+      .map(function (k) { return { v: k.id, ic: k.appIcon, l: k.label }; });
     var p = draft;
     var kind = p.frames[sel[0]], same = sel.every(function (i) { return p.frames[i] === kind; });
     var h = '<h2>' + sel.map(function (i) { return FRAME_IDS[i]; }).join(' + ') + '</h2><div class="ctx">Frame' + (sel.length > 1 ? 's' : '') + ' — shift-click frames or use the chips to multi-select</div>'
@@ -6725,12 +6724,9 @@
   var SP_LABEL={all:'All TVs',random:'Random TV',sweep:'Sweep L→R',sweeprev:'Sweep R→L'};
   var search='', selDir='', menuFor=null, lastSig='', prevAudio=null, prevKey='', moreDirs=false;
   var vizCfg=null, vizGame=null;
-  var VIZ_STYLES=[['cathedral','Cathedral Bars'],['ribbon','Waveform Ribbon'],['fountain','Particle Fountain'],
-    ['aurora','Aurora Veils'],['pond','Ripple Pond'],['vinyl','Vinyl & VU'],['mandala','Kaleidoscope Mandala'],
-    ['fireflies','Firefly Swarm'],['skyline','Neon Skyline'],['fireplace','Reactive Fireplace'],
-    ['wave','🌊 Great Wave (panorama)'],['stadium','Stadium Spectrum (panorama)'],
-    ['beatsweep','Beat Sweep (panorama)'],['constellation','Constellation Room (panorama)'],
-    ['shuffle','🔀 Shuffle styles']];
+  /* Phase 2d: derived from the single engine catalogue — the '(panorama)' suffix
+     this lane used to hand-write now comes from the pan flag. */
+  var VIZ_STYLES=(IE.VIZ_STYLES||[]).map(function(s){ return [s.id, s.label+(s.pan?' (panorama)':'')]; });
   function curModeId(){ var el=$('.scard.sel[data-id]'); return el?el.dataset.id:null; }
   function fetchViz(){
     var id=curModeId(); vizGame=id;

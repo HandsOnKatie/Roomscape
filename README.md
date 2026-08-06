@@ -2,7 +2,7 @@
 
 **Turn a wall of TVs into an immersive room.** Roomscape drives portrait screens, smart lights, and music together as one-tap "modes" — a calm gallery at rest, an ocean floor at dinner, a haunted manor on games night.
 
-**Version: 0.20 (pre-release — not yet ready for general use)**
+**Version: 0.30 (pre-release — not yet ready for general use)**
 
 ---
 

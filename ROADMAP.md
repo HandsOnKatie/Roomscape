@@ -15,12 +15,14 @@
 - ✅ Superseded ROOMS PHASE blocks removed (−657 lines), runtime-verified dead; smoke harness added.
 - ➡ Carried to Phase 2: port remaining route blocks to the central router (`modules/`); delete the dead ASSET UPLOAD + RULES & SCORES blocks and **re-implement `POST /api/upload` via the router** (it is currently dead at runtime — pre-existing bug found during the collapse).
 
-## Phase 2 — Portability (target v0.3x–0.4x)
-- Finish N-frame layout: derive panorama math from layout (kill `%3` / two-wall assumptions), generate wall hosts, single frame-id source.
-- **Roles, not TV names**: `centers` / `corners` / `primary` / `sweepOrder` resolved from layout; games, rules wall, TTS, spatial audio use roles.
-- Rename the magic at-rest id (`atRestMode` in config, `dining` kept as alias).
-- TV quirks per entity (`samsung-frame` art-mode semantics) instead of name-substring matching.
-- Consolidate the duplicated registries (frame kinds ×5, viz styles ×4) to single sources.
+## Phase 2 — Portability ✅ DONE in v0.30
+- ✅ N-frame layout: panorama/wall math derived from layout; dynamic wall hosts; single frame-id source; frame pages accept any id.
+- ✅ Roles (`primary`/`centers`/`corners`/`sweepOrder`) derived + config-overridable; games, rules wall, TTS, cue cards, sweeps all role-based. Classic-layout behaviour verified byte-identical.
+- ✅ `atRestMode` wired end to end (`dining` stays the shipped default id).
+- ✅ TV quirks per entity via `config.ha.tvQuirks` (legacy fallback kept).
+- ✅ Registries consolidated (IE.KINDS / IE.VIZ_STYLES / IE.PLAYLIST_DISPLAYS); engine.js missing-`photos` renderer bug fixed.
+- ✅ Router: dead blocks removed, `/api/upload` revived (pre-existing prod bug), 4 more blocks ported.
+- ➡ Carried to Phase 3+: remaining prependListener blocks that wrap functions or chain responses (VARIANTS+PLAYLISTS shim, RULES SOUND/EDIT middleware, SCENE DIMS, REVEAL REEL) — port only with a router middleware concept; Sound Studio dead VIZ_STYLES variable cleanup.
 
 ## Phase 3 — Theme packs (target v0.5x–0.6x)
 - Pack loader (namespace ids, pack-relative media index, semantic-light resolution, MA music query flow).
