@@ -1,6 +1,6 @@
 # Architecture
 
-**Doc version 0.10** · Engine: conductor v4.24-derived · Repo: v0.10
+**Doc version 1.03** · Engine: conductor v5.03 · Repo: v1.03
 
 Roomscape is a hub-and-spokes system: one Node process (the **Conductor**) owns all state; everything else — control app, TV frames, Home Assistant, edge mirrors — is a client of it.
 
@@ -47,13 +47,25 @@ A frame is just a browser at `frame.html?frame=<id>&ws=auto`, fullscreen on one 
 
 ## Data files
 
+Since v1.03 there is exactly **one writable state root**: `DATA_DIR` (default
+`<APP_DIR>/data`; Docker sets `/app/data`, deliberately outside the folder
+served over HTTP). Everything the Conductor writes lives under it — nothing
+writable sits inside `APP_DIR`, which Docker mounts read-only. On the first boot
+after updating, any store found in a pre-1.03 location is copied across and the
+move is logged.
+
 | File / folder | Role |
 |---|---|
 | `data/profiles.json` | The editable heart: mode definitions, per-frame content, transitions, tag map, settings (HA entity map, audio port map). Backed up before every overwrite. |
 | `data/state.json` | Current room state; restores on boot. |
+| `data/admin-token` | The generated admin token, if you didn't set `ADMIN_TOKEN`. |
+| `data/scores.json`, `rules-data.json`, `playlists.json`, `social-effects.json`, `viz.json`, `mediafx.json`, `modeposters.json`, `variants.json`, `scenedims.json` | Per-feature stores, all written through the same path. |
+| `data/_backups/` | Timestamped copies taken before every store overwrite, plus `profiles-history/` and `rules-history/`. Rotated (48 h of everything, daily for 60 days, hard cap 400). |
+| `data/.thumbs/` | Picker thumbnail cache. Disposable — deleting it just costs a regeneration. |
 | `decks/` | Plain-text card decks (charades, quiz, conversation starters) — one item per line. |
 | `themes/` | Drop-in theme packs (art + sounds + lighting in one folder) — see THEMES.md. |
-| `media/`, `sounds/` | Your scene library and sound cues; scanned on start and on rescan. |
+| `media/`, `sounds/` | Your scene library and sound cues; scanned on start and on rescan. `MEDIA_DIR` defaults to `<APP_DIR>/media`; an older install's `Images & Videos` folder is picked up automatically when `media/` is absent, and the boot banner says which it chose. `sounds/voice/` holds the TTS cache, so that mount must be writable. |
+| `people/` | Score-card portraits, written by the app and served back from `/people/`. |
 | `.env` | Secrets: HA/MA URLs and tokens. Never committed, never in JSON. |
 
 ## Design invariants

@@ -1,6 +1,29 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.9 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v2.0 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v2.0 (RS-SEC v1.03, documentation-inventory pass): one check per G-fix.
+     G1  GET /api/log is 401 tokenless and 200 with the token; the ring buffer
+         never contains the live admin token (boot 3 asks the first-run install
+         for /api/log?q=admin with its own token and greps the reply), while the
+         boot log still shows the token to whoever can read the container logs.
+     G2  the internal loopback POST helpers attach x-rs-token (source canary on
+         rsSelfHeaders + both call sites), and a party game that ends with
+         scores really does reach /api/scores/result — proved end to end by
+         starting a game, scoring, ending it, and reading the result back out of
+         GET /api/scores. No 401 appears in the boot log.
+     G3  MEDIA_DIR defaults to <APP_DIR>/media (boot 6, a scratch APP_DIR with
+         neither folder), the legacy "Images & Videos" name still wins when it
+         is the only one present, and the banner says which it chose.
+     G4  with DATA_DIR set, the JSON stores, _backups and .thumbs land under it
+         and nothing is written into APP_DIR; a legacy store beside APP_DIR is
+         migrated in on first boot; backupFile() failure is loud.
+     G5  POST /api/schedule rejects an unknown mode (400) and accepts a real one
+         and the at-rest id; the served static allow-list no longer carries
+         /control.html or /editor.html; a ping over the WS gets a pong; the
+         weather poll reads the live pollMinutes (source canary).
+     G6  version coherence — banner v5.03 (community v1.03), /api/health
+         version 5.03 + repo 1.03, package.json 1.0.3, README/SECURITY/
+         ARCHITECTURE/CHANGELOG headers all read 1.03.
    v1.9 (RS-SEC v1.02, frontend pass): 24 SERVED-FILE canaries in boot 1. There
    is no browser here, so the XSS and wiring fixes are proved by asserting on
    the bytes the conductor hands a client — /app.js, /engine.js, /fx.js,
@@ -117,6 +140,13 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-smoke-'));
 const themesTmp = path.join(tmp, 'themes');
 fs.cpSync(path.join(ROOT, 'themes'), themesTmp, { recursive: true });
 
+// v2.0 (G4): boot 1's writable state root. Everything the conductor writes —
+// JSON stores, _backups, .thumbs — must resolve under DATA_DIR, so pointing it
+// at a scratch dir both proves the fix and stops smoke littering the repo.
+// (the legacy-store migration is exercised by boot 6, on a scratch APP_DIR —
+//  nothing is ever planted in the repo working tree)
+const dataTmp = path.join(tmp, 'data1');
+
 const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
   env: Object.assign({}, process.env, {
     PORT: String(PORT),
@@ -124,6 +154,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
     ADMIN_TOKEN: TOK,                            // v1.6: env token — nothing writes into the repo data/
     STATE_FILE: path.join(tmp, 'state.json'),
     PROFILES_FILE: path.join(tmp, 'profiles1.json'),   // v1.3: round-trip check WRITES profiles — scratch file, never the repo store
+    DATA_DIR: dataTmp,                           // v2.0 (G4): the single writable state root — every JSON store must land HERE, not in the repo
     MEDIA_DIR: path.join(tmp, 'media'),          // v1.1: upload check writes here, not the repo
     THEMES_DIR: themesTmp,                       // v1.4: import/overwrite checks write here, not the repo
     HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
@@ -461,8 +492,8 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     check('GET /api/ha/entities with token + no HA -> 200 {ok:false,"ha not configured"}',
       he1.code === 200 && !!(hej && hej.ok === false && hej.error === 'ha not configured'),
       'code ' + he1.code + ' ' + he1.body.slice(0, 160));
-    check('boot banner reads v5.01 (community v1.01)',
-      bootLog.indexOf('Roomscape Conductor  v5.01 (community v1.01)') >= 0, bootLog.slice(0, 400));
+    check('boot banner reads v5.03 (community v1.03)',
+      bootLog.indexOf('Roomscape Conductor  v5.03 (community v1.03)') >= 0, bootLog.slice(0, 400));
 
     // ================= v1.8 (RS-SEC v1.01) =================
 
@@ -673,6 +704,104 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       (fjs.body.match(/var VIZ_STYLES/g) || []).length === 1,
       'VIZ_STYLES declared ' + ((fjs.body.match(/var VIZ_STYLES/g) || []).length) + ' time(s), expected 1');
 
+    /* ---- v2.0 (RS-SEC v1.03): the documentation-inventory fixes ---- */
+
+    // G1b: /api/log joins /api/ha/entities as a gated read
+    const logNo = await get('/api/log?n=5');
+    check('G1b GET /api/log is 401 without the admin token',
+      logNo.code === 401 && logNo.body.indexOf('"auth"') >= 0, 'code ' + logNo.code + ' ' + logNo.body.slice(0, 160));
+    const logYes = await getTok('/api/log?n=5');
+    let logJ = null; try { logJ = JSON.parse(logYes.body); } catch (e) {}
+    check('G1b GET /api/log answers 200 with lines[] WITH the token',
+      logYes.code === 200 && !!(logJ && logJ.ok && Array.isArray(logJ.lines)), 'code ' + logYes.code + ' ' + logYes.body.slice(0, 160));
+
+    // G1a: the ring buffer must not contain the live token (env token here)
+    const logAll = await getTok('/api/log?n=500');
+    check('G1a the log ring buffer contains no copy of the live admin token',
+      logAll.code === 200 && logAll.body.indexOf(TOK) < 0, 'the token "' + TOK + '" appears in GET /api/log output');
+
+    // G2: source canaries — the loopback helper and both call sites
+    const condSrc1 = fs.readFileSync(path.join(ROOT, 'conductor.js'), 'utf8');
+    check('G2 the internal loopback helper attaches x-rs-token lazily',
+      /function rsSelfHeaders/.test(condSrc1) && condSrc1.indexOf("global.__rsAdminToken || process.env.ADMIN_TOKEN") >= 0,
+      'rsSelfHeaders missing or not reading the token lazily');
+    check('G2 both internal loopback POSTs (party games + Time Machine) go through rsSelfHeaders',
+      (condSrc1.match(/headers: rsSelfHeaders\(/g) || []).length === 2
+        && (condSrc1.match(/host: '127\.0\.0\.1'/g) || []).length === 2,
+      'rsSelfHeaders call sites: ' + ((condSrc1.match(/headers: rsSelfHeaders\(/g) || []).length)
+        + ', loopback requests: ' + ((condSrc1.match(/host: '127\.0\.0\.1'/g) || []).length));
+
+    // G2 end to end: a party game that ends with a scorer must reach
+    // POST /api/scores/result over loopback THROUGH the auth gate. Before the
+    // fix that call carried no token, so it 401'd and the result vanished.
+    const gStart = await post('/api/games/start', { id: 'werewolf', cfg: { players: ['SmokeAnn', 'SmokeBo', 'SmokeCy', 'SmokeDi'] } });
+    let gsj = null; try { gsj = JSON.parse(gStart.body); } catch (e) {}
+    check('G2 a party game starts', gStart.code === 200 && !!(gsj && gsj.ok), 'code ' + gStart.code + ' ' + gStart.body.slice(0, 200));
+    if (gStart.code === 200) {
+      await post('/api/games/action', { action: 'award', name: 'SmokeAnn' });
+      await post('/api/games/end', {});
+      await sleep(800);   // selfPost is fire-and-forget over loopback
+      const sc = await get('/api/scores');
+      let scj = null; try { scj = JSON.parse(sc.body); } catch (e) {}
+      const results = (scj && scj.results) || [];
+      check('G2 the automatic score post reached /api/scores/result through the auth gate',
+        results.length >= 1 && JSON.stringify(results).indexOf('SmokeAnn') >= 0,
+        'no result banked — results: ' + JSON.stringify(results).slice(0, 240));
+    }
+    check('G2 no internal loopback call was refused with 401',
+      bootLog.indexOf('admin token missing on the loopback call') < 0,
+      bootLog.split('\n').filter(l => l.indexOf('internal POST') >= 0).join(' | '));
+
+    // G4: every JSON store resolves under DATA_DIR, and nothing lands in the repo
+    const inData = fs.existsSync(dataTmp) ? fs.readdirSync(dataTmp) : [];
+    check('G4 the JSON stores + _backups land under DATA_DIR',
+      inData.indexOf('scores.json') >= 0 && inData.indexOf('_backups') >= 0,
+      'DATA_DIR (' + dataTmp + ') holds: ' + JSON.stringify(inData));
+    check('G4 no JSON store was written into the repo root',
+      !fs.existsSync(path.join(ROOT, 'scores.json')) && !fs.existsSync(path.join(ROOT, 'viz.json'))
+        && !fs.existsSync(path.join(ROOT, 'playlists.json')) && !fs.existsSync(path.join(ROOT, 'mediafx.json')),
+      'a store leaked into ' + ROOT);
+    check('G4 backupFile reports failure loudly instead of swallowing it',
+      /\[backup\] ' \+ lastBackupError/.test(condSrc1) && condSrc1.indexOf('the save is going ahead WITHOUT a backup') >= 0,
+      'backupFile still has a silent catch');
+
+    // G5: schedule validation
+    const badSched = await post('/api/schedule', { schedule: [{ time: '07:30', mode: 'no-such-mode-xyz', days: [1] }] });
+    check('G5 POST /api/schedule rejects an unknown mode id with 400',
+      badSched.code === 400 && badSched.body.indexOf('unknown mode') >= 0, 'code ' + badSched.code + ' ' + badSched.body.slice(0, 200));
+    const goodSched = await post('/api/schedule', { schedule: [{ time: '07:30', mode: 'dining', days: [1] }] });
+    check('G5 POST /api/schedule accepts a real mode id',
+      goodSched.code === 200, 'code ' + goodSched.code + ' ' + goodSched.body.slice(0, 200));
+
+    // G5: the dead pages are out of the allow-list
+    const ctl = await get('/control.html'), edt = await get('/editor.html');
+    check('G5 /control.html and /editor.html are no longer allow-listed',
+      ctl.code === 404 && edt.code === 404, 'control ' + ctl.code + ', editor ' + edt.code);
+
+    // G5: the client's 20 s liveness ping is answered
+    const wsP = await wsConnect('/');
+    if (wsP.code === 101) {
+      const pong = await new Promise((resolve) => {
+        let buf = '';
+        wsP.socket.on('data', (c) => { buf += c.toString('utf8'); });
+        wsSendText(wsP.socket, { ie: true, type: 'ping', t: Date.now() });
+        setTimeout(() => resolve(buf), 1200);
+      });
+      check('G5 a WS ping is answered with a pong', pong.indexOf('"pong"') >= 0, 'frames seen: ' + JSON.stringify(pong.slice(0, 200)));
+      try { wsP.socket.destroy(); } catch (e) {}
+    } else check('G5 a WS ping is answered with a pong', false, 'upgrade failed: ' + wsP.code);
+
+    // G5: the weather poll reads the LIVE setting
+    check('G5 the weather poll reads settings.weather.pollMinutes live',
+      /function weatherEveryMs/.test(condSrc1) && condSrc1.indexOf('setInterval(pollWeather') < 0,
+      'still a fixed setInterval built from DEFAULT_SETTINGS');
+
+    // G6: /api/health carries the version
+    const health = await get('/api/health');
+    let hj = null; try { hj = JSON.parse(health.body); } catch (e) {}
+    check('G6 /api/health reports version 5.03 / repo 1.03',
+      !!(hj && hj.version === '5.03' && hj.repo === '1.03'), health.body.slice(0, 200));
+
     // versions (rule 11: never change behaviour without changing the version)
     check('v1.02 the five touched frontend files carry bumped versions',
       /app\.js\)  v3\.84/.test(fjs.body) && /engine\.js\)  v0\.92/.test(fengine.body)
@@ -693,6 +822,7 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       PORT: String(PORT2),
       APP_DIR: ROOT,
       ADMIN_TOKEN: TOK,                          // v1.6
+      DATA_DIR: path.join(tmp, 'data2'),         // v2.0 (G4)
       CONFIG_FILE: cfgFile,
       STATE_FILE: path.join(tmp, 'state2.json'),
       PROFILES_FILE: path.join(tmp, 'profiles2.json'),
@@ -815,6 +945,24 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       const ok3 = await post('/api/mode/dining', {}, PORT3, genTok);
       let ok3j = null; try { ok3j = JSON.parse(ok3.body); } catch (e) {}
       check('first-run boot: POST with the file token -> 200 ok', ok3.code === 200 && !!(ok3j && ok3j.ok), 'code ' + ok3.code + ' ' + ok3.body.slice(0, 120));
+
+      /* ---- v2.0 (G1) the whole point of the critical fix ----
+         On a FIRST-RUN install the generated token used to be printed with
+         console.log, which RS-LOG-BUFFER wraps — so it sat in the ring and
+         `GET /api/log?q=admin` handed it to any unauthenticated LAN client.
+         Both ends are checked: the route is closed, and even a caller who HAS
+         the token (or any future path into the ring) cannot read it back. */
+      const logOpen3 = await get('/api/log?q=admin', PORT3);
+      check('G1 first-run boot: GET /api/log is closed to an unauthenticated client',
+        logOpen3.code === 401, 'code ' + logOpen3.code + ' — body: ' + logOpen3.body.slice(0, 200));
+      check('G1 first-run boot: the unauthenticated /api/log reply cannot contain the token',
+        genTok.length >= 24 && logOpen3.body.indexOf(genTok) < 0, 'the generated token leaked in the 401 body');
+      const logTok3 = await getTok('/api/log?n=500', PORT3, genTok);
+      check('G1 first-run boot: the generated token is NOT in the ring buffer even for an authorised reader',
+        logTok3.code === 200 && genTok.length >= 24 && logTok3.body.indexOf(genTok) < 0,
+        'code ' + logTok3.code + ' — token found in the buffered log');
+      check('G1 first-run boot: the token still reaches the boot log (container logs)',
+        bootLog3.indexOf('admin token (first run): ' + genTok) >= 0, bootLog3.slice(-500));
     }
   } catch (e) { check('first-run boot checks ran', false, String(e)); }
   child3.kill();
@@ -833,6 +981,8 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       ADMIN_TOKEN: TOK,
       PROFILES_FILE: emptyProf,
       STATE_FILE: path.join(tmp, 'state4.json'),
+      DATA_DIR: path.join(tmp, 'data4'),        // v2.0 (G4): keep every boot's writable state out of the repo
+
       MEDIA_DIR: path.join(tmp, 'media'),
       HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
     }),
@@ -869,6 +1019,8 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       PORT: String(PORT5), APP_DIR: ROOT, ADMIN_TOKEN: TOK,
       PROFILES_FILE: sixProf,
       STATE_FILE: path.join(tmp, 'state5.json'),
+      DATA_DIR: path.join(tmp, 'data5'),        // v2.0 (G4)
+
       MEDIA_DIR: path.join(tmp, 'media'),
       HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
     }),
@@ -896,6 +1048,87 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     }
   } catch (e) { check('wipe-block boot checks ran', false, String(e)); }
   child5.kill();
+
+  /* ---- boot 6 (v2.0, RS-SEC v1.03 G3+G4): a STOCK install ----
+     Scratch APP_DIR, no MEDIA_DIR, no DATA_DIR — exactly what `docker compose
+     up` produces. Two things must be true that were not true in v1.02:
+       G3  MEDIA_DIR resolves to <APP_DIR>/media (the code shipped with the
+           private install's "Images & Videos", which no stock install has, so
+           the conductor scanned a folder that did not exist);
+       G4  a legacy JSON store sitting beside APP_DIR is migrated into DATA_DIR
+           on first boot, and every store resolves under DATA_DIR from then on.
+     A second boot with ONLY the legacy media folder present proves the
+     back-compat fallback still wins for an existing install. */
+  const PORT6 = PORT + 5;
+  const app6 = path.join(tmp, 'app6');
+  fs.mkdirSync(path.join(app6, 'media'), { recursive: true });
+  // plant a legacy store beside APP_DIR (the pre-1.03 home) — must be migrated
+  fs.writeFileSync(path.join(app6, 'viz.json'), JSON.stringify({ modes: { __smoke__: { on: true, style: 'bars' } } }, null, 2));
+  const child6 = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
+    env: Object.assign({}, process.env, {
+      PORT: String(PORT6), APP_DIR: app6, ADMIN_TOKEN: TOK,
+      MEDIA_DIR: '', DATA_DIR: '',            // <- deliberately unset: exercise the DEFAULTS
+      HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let bootLog6 = '';
+  child6.stdout.on('data', d => bootLog6 += d);
+  child6.stderr.on('data', d => bootLog6 += d);
+  try {
+    let up6 = false;
+    for (let i = 0; i < 30 && !up6; i++) { await sleep(500); try { up6 = (await get('/api/health', PORT6)).code === 200; } catch (e) {} }
+    check('stock boot: conductor boots with no MEDIA_DIR and no DATA_DIR', up6, 'no response after 15s. Boot log:\n' + bootLog6.slice(-2000));
+    if (up6) {
+      check('G3 MEDIA_DIR defaults to <APP_DIR>/media (matching .env.example and compose)',
+        bootLog6.indexOf(path.join(app6, 'media')) >= 0 && bootLog6.indexOf('Images & Videos') < 0,
+        bootLog6.split('\n').filter(l => l.indexOf('media') >= 0).join(' | ').slice(0, 400));
+      check('G3 the boot banner says which media folder it chose',
+        /from default <APP_DIR>\/media/.test(bootLog6), bootLog6.split('\n').filter(l => /^\s*media/.test(l)).join(' | '));
+      check('G4 DATA_DIR defaults to <APP_DIR>/data and is announced at boot',
+        bootLog6.indexOf(path.join(app6, 'data')) >= 0, bootLog6.split('\n').filter(l => l.indexOf('data') >= 0).join(' | ').slice(0, 300));
+      check('G4 a legacy store beside APP_DIR is migrated into DATA_DIR on first boot',
+        fs.existsSync(path.join(app6, 'data', 'viz.json')) && bootLog6.indexOf('[store] migrated') >= 0,
+        'viz.json under data/: ' + fs.existsSync(path.join(app6, 'data', 'viz.json'))
+          + ' — ' + bootLog6.split('\n').filter(l => l.indexOf('[store]') >= 0).join(' | '));
+      let vizMig = null; try { vizMig = JSON.parse(fs.readFileSync(path.join(app6, 'data', 'viz.json'), 'utf8')); } catch (e) {}
+      check('G4 the migrated store kept its contents',
+        !!(vizMig && vizMig.modes && vizMig.modes.__smoke__), JSON.stringify(vizMig));
+      // a write must land under DATA_DIR, never back in APP_DIR
+      const scRes = await post('/api/scores/result', { game: 'Smoke', players: [{ name: 'Zed', score: 1, won: true }] }, PORT6);
+      check('G4 a store WRITE lands under DATA_DIR, not APP_DIR',
+        scRes.code === 200 && fs.existsSync(path.join(app6, 'data', 'scores.json')) && !fs.existsSync(path.join(app6, 'scores.json')),
+        'code ' + scRes.code + ', data/scores.json ' + fs.existsSync(path.join(app6, 'data', 'scores.json'))
+          + ', APP_DIR/scores.json ' + fs.existsSync(path.join(app6, 'scores.json')));
+    }
+  } catch (e) { check('stock boot checks ran', false, String(e)); }
+  child6.kill();
+
+  // ---- boot 7 (v2.0, G3): the LEGACY media folder must still win ----
+  const PORT7 = PORT + 6;
+  const app7 = path.join(tmp, 'app7');
+  fs.mkdirSync(path.join(app7, 'Images & Videos'), { recursive: true });   // and NO media/
+  const child7 = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
+    env: Object.assign({}, process.env, {
+      PORT: String(PORT7), APP_DIR: app7, ADMIN_TOKEN: TOK, MEDIA_DIR: '', DATA_DIR: '',
+      HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let bootLog7 = '';
+  child7.stdout.on('data', d => bootLog7 += d);
+  child7.stderr.on('data', d => bootLog7 += d);
+  try {
+    let up7 = false;
+    for (let i = 0; i < 30 && !up7; i++) { await sleep(500); try { up7 = (await get('/api/health', PORT7)).code === 200; } catch (e) {} }
+    check('legacy-media boot: conductor boots', up7, 'no response after 15s. Boot log:\n' + bootLog7.slice(-2000));
+    if (up7) {
+      check('G3 an existing "Images & Videos" install keeps working (fallback wins when media/ is absent)',
+        bootLog7.indexOf(path.join(app7, 'Images & Videos')) >= 0 && /legacy "Images & Videos" folder/.test(bootLog7),
+        bootLog7.split('\n').filter(l => /^\s*media/.test(l)).join(' | '));
+    }
+  } catch (e) { check('legacy-media boot checks ran', false, String(e)); }
+  child7.kill();
 
   // ---- library + source checks (no boot needed) ----
   try {
@@ -939,6 +1172,47 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       'compose still mounts data inside /app/web');
     check('F4 config.example.json ships auth.tagOpen false',
       /"tagOpen"\s*:\s*false/.test(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8')), 'tagOpen not defaulted to false');
+
+    /* ---- v2.0 (G6): version coherence. Rule 11 — every surface agrees. ---- */
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+    const secmd = fs.readFileSync(path.join(ROOT, 'SECURITY.md'), 'utf8');
+    const archmd = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');
+    check('G6 package.json is 1.0.3', pkg.version === '1.0.3', 'version ' + pkg.version);
+    check('G6 conductor.js header reads v5.03 (community release v1.03)',
+      condSrc.indexOf('Conductor backend  v5.03 (community release v1.03)') >= 0, 'header version stale');
+    check('G6 README says Version: 1.03', /\*\*Version:\s*1\.03\*\*/.test(readme), 'README version line stale');
+    check('G6 CHANGELOG has a 1.03 entry at the top',
+      /^# Changelog\s*\n\s*## 1\.03 /m.test(changelog), 'no 1.03 entry heading the changelog');
+    check('G6 SECURITY.md says Version 1.03', /\*\*Version 1\.03\*\*/.test(secmd), 'SECURITY.md version stale');
+    check('G6 docs/ARCHITECTURE.md header reads 1.03 / conductor v5.03',
+      /\*\*Doc version 1\.03\*\*/.test(archmd) && archmd.indexOf('conductor v5.03') >= 0 && archmd.indexOf('Repo: v1.03') >= 0,
+      archmd.split('\n').slice(0, 4).join(' | '));
+    check('G6 README project status no longer claims the shipped work is pending',
+      readme.indexOf('still to land') < 0 && readme.indexOf('pre-release scaffold') < 0,
+      'the stale "still to land" project-status paragraph is still there');
+
+    /* ---- v2.0 (G3): the repo must ship the folders the defaults point at ---- */
+    check('G3 the repo ships media/.gitkeep and .gitignore keeps the folder but not its contents',
+      fs.existsSync(path.join(ROOT, 'media', '.gitkeep'))
+        && fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8').indexOf('!media/.gitkeep') >= 0,
+      'media/.gitkeep ' + fs.existsSync(path.join(ROOT, 'media', '.gitkeep')));
+    check('G3 .env.example documents the media default and the legacy fallback',
+      /defaults to <APP_DIR>\/media/i.test(fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8'))
+        && /Images & Videos/.test(fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8')),
+      '.env.example does not describe MEDIA_DIR');
+
+    /* ---- v2.0 (G7): the loud ones are written down ---- */
+    check('G7 SECURITY.md documents the four known-open surfaces',
+      secmd.indexOf('"auth": { "enabled": false }') >= 0
+        && secmd.indexOf('/api/theme/export/') >= 0
+        && secmd.indexOf('deploy/edge.js') >= 0
+        && /known read-surface/i.test(secmd),
+      'auth-off ' + (secmd.indexOf('"auth": { "enabled": false }') >= 0)
+        + ', theme-export ' + (secmd.indexOf('/api/theme/export/') >= 0)
+        + ', edge ' + (secmd.indexOf('deploy/edge.js') >= 0)
+        + ', read-surface ' + /known read-surface/i.test(secmd));
   } catch (e) { check('library + source checks ran', false, String(e && e.stack || e)); }
 
   const fails = checks.filter(c => !c.ok).length;

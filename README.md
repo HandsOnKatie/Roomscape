@@ -2,7 +2,7 @@
 
 **Turn a wall of TVs into an immersive room.** Roomscape drives portrait screens, smart lights, and music together as one-tap "modes" — a calm gallery at rest, an ocean floor at dinner, a haunted manor on games night.
 
-**Version: 1.01** — feature-complete first release plus a security fix pass (see [CHANGELOG](CHANGELOG.md#101--2026-08-06-conductor-v501--app-v383--engine-v091--fx-v161) and [SECURITY.md](SECURITY.md)). (Starter theme packs are still being hand-produced; the shipped `ocean-depths` pack demonstrates the format.)
+**Version: 1.03** — feature-complete first release plus two pre-release fix passes (see [CHANGELOG](CHANGELOG.md) and [SECURITY.md](SECURITY.md)). (Starter theme packs are still being hand-produced; the shipped `ocean-depths` pack demonstrates the format.)
 
 ---
 
@@ -53,7 +53,24 @@ Then see [docs/INSTALL.md](docs/INSTALL.md) for display-PC kiosk setup, and [doc
 
 ## Project status
 
-This is a pre-release scaffold extracted from a live private installation (the original six-frame dining-room build). The engine is battle-tested; the packaging is new. See [ROADMAP.md](ROADMAP.md) for what's done and what's in flight — headline items still to land: the theme-pack loader/importer, the first-run wizard, and N-frame layout generalization.
+Roomscape was extracted from a live private installation (the original six-frame dining-room build) and generalized for other people's rooms. The engine is battle-tested; the packaging is new, and nothing has been deployed publicly yet.
+
+**Done and in the box:**
+
+- N-frame layouts — any number of portrait screens, any wall grouping, configured in `config.json` or through the wizard (the six-frame two-wall room is just the default).
+- Screen *roles* rather than hard-coded TV names, so modes written for someone else's wall still make sense on yours.
+- The theme-pack loader, plus export and import as a zip from inside the app.
+- The first-run setup wizard: name the room, lay out the screens, map Home Assistant TVs (with per-frame Identify) and lights, pick a theme.
+- Docker packaging, a bare-Node path, and the display-PC kiosk scripts.
+- Two rounds of pre-release security work and a documentation inventory pass — see [SECURITY.md](SECURITY.md) and the [CHANGELOG](CHANGELOG.md).
+
+**Genuinely still pending:**
+
+- **Hand-built starter theme packs.** Only `ocean-depths` ships today, and it exists mainly to demonstrate the format. Making good packs is art production, not code.
+- **Landscape screens.** v1 is portrait-only. Landscape and mixed-orientation walls need real layout work, not a config flag.
+- **A browser test rig.** `scripts/smoke.js` covers the server and asserts on the bytes served to a client, but nothing yet drives the actual app or frame pages in a browser.
+
+See [ROADMAP.md](ROADMAP.md) for the longer view.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "immersion-engine-conductor",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "The Immersion Engine — Conductor backend (state authority + WebSocket sync + REST + optional MQTT) and the frame/control web app.",
   "main": "conductor.js",
   "scripts": {

@@ -1,5 +1,117 @@
 # Changelog
 
+## 1.03 — 2026-08-06 (conductor v5.03)
+
+**More pre-release fixes.** While writing the reference documentation for v1.02
+— going through every API route, every environment variable and every file the
+Conductor writes, one at a time — a further batch of real bugs fell out. As with
+1.01, all of this was found *before* any public release: Roomscape has never
+been deployed publicly and there is no opportunity for real-world exploitation.
+If you are running a copy on your own LAN, update: the first item defeats the
+admin token completely on a fresh install, and the second and third mean several
+features simply do not work out of the box.
+
+*(There is no 1.02 entry here — 1.02 was the frontend half of the 1.01 security
+pass and is described in that entry.)*
+
+**Critical**
+
+- **The diagnostic log handed out the admin token.** The Conductor keeps the
+  last 500 console lines in memory and serves them at `GET /api/log` — and that
+  route had no token check at all. The buffer starts capturing *before* the
+  point where a fresh install prints its generated admin token, so on a
+  first-run install `GET /api/log?q=admin` returned the admin token to any
+  unauthenticated device on the network: a complete bypass of the whole gate.
+  Both ends are fixed. The first-run token is now printed by a route that the
+  buffer does not capture (you still see it in the boot log and in
+  `docker logs roomscape`, which is where you read it from), every line kept in
+  the buffer is scrubbed of the live Home Assistant, Music Assistant and admin
+  tokens, and `GET /api/log` now requires the admin token like
+  `GET /api/ha/entities`.
+
+**High**
+
+- **The Conductor could not talk to itself.** Three features work by the
+  Conductor sending a request to its own API: the party-game narrator's speech,
+  the automatic "save the result" when a game ends with scores, and the whole
+  Time Machine profile-restore. None of them sent the admin token, so with
+  authentication on — which is the default — they were all quietly refused.
+  Party games narrated silently, results were never banked, and every restore
+  failed with "apply failed (401)". They now authenticate like any other client.
+- **A stock install pointed at a media folder that doesn't exist.** The code
+  defaulted to a folder called `Images & Videos` (a leftover from the original
+  private build) while `.env.example` and the Docker compose file both say
+  `media/`. Out of the box the Conductor therefore scanned nothing and found
+  zero scenes. The default is now `media/`, and the repository ships that folder
+  so a fresh clone works. If you have an existing install using the old name it
+  keeps working: the old folder is used automatically when it is the one that
+  exists, and the boot banner now says which folder it picked.
+- **Several things the Conductor saves had nowhere to save to.** Scores, game
+  rules, per-mode playlists, custom effects, visualiser settings, image grades,
+  mode posters, frame variants and the scene-dimension cache were being written
+  either into the app folder (which Docker mounts read-only, so every write
+  failed silently) or into a folder inside the container (which is wiped every
+  time the container is recreated). Backups and the thumbnail cache had the same
+  problem. All of it now lives under one writable folder — `DATA_DIR`, which
+  Docker already maps to `data/` next to the repository — and anything found in
+  an old location is copied across automatically on the first boot after
+  updating, with a line in the log saying so.
+- **A failed backup no longer pretends to have worked.** `backupFile()` swallowed
+  every error, so saving your modes could report success having written no
+  backup at all — the one safety net for that file, gone without a word. It now
+  logs the failure loudly, and a profiles save that could not be backed up
+  returns a `warning` alongside the success so the interface can say so.
+- **The TTS cache and score-card portraits can be written again.** Both wrote
+  into read-only Docker mounts. The compose file now mounts `sounds/` writable
+  (that's where generated speech is cached) and adds a `people/` mount for
+  scoreboard portraits.
+
+**Medium**
+
+- **The weather poll interval setting did nothing.** `settings.weather.pollMinutes`
+  was read once from the built-in defaults and never again, so changing it had no
+  effect even after a restart. The live value is now read on every poll.
+- **Schedule rules accepted modes that don't exist.** A typo in a scheduled mode
+  id saved happily and then fired every day into nothing. Unknown mode ids are
+  now refused with a clear message.
+- **Two dead pages removed from the web server's allow-list.** `/control.html`
+  and `/editor.html` were dropped from this repository before v1.00 but were
+  still listed as servable, and a missing `app.html` fell back to serving
+  `control.html` — producing a bare 404 with no explanation. A missing
+  `app.html` now returns a page that says so and tells you where it looked.
+- **The screens' liveness ping gets a reply.** Frame pages ping the Conductor
+  every 20 seconds and force a reconnect after 90 seconds of silence; the server
+  ignored the ping entirely and the watchdog only worked by accident, because
+  the two-second clock broadcast kept the connection noisy. Pings are now
+  answered with a pong.
+
+**Documentation**
+
+- SECURITY.md gains a "Known open surfaces" section stating plainly, rather than
+  leaving to be discovered: that the admin token can be used to switch
+  authentication off permanently; that theme-pack export is an ungated bulk
+  download; exactly what the open profile reads expose (Home Assistant entity
+  ids, room layout, schedules, the NFC tag map — only the music token is
+  redacted); and that `deploy/edge.js` has no authentication whatsoever, allows
+  every origin, and can rewrite the kiosk startup script and restart the
+  session — so it must never leave a trusted LAN segment.
+- The README's "Project status" section was two releases out of date, listing
+  the theme loader, the setup wizard and N-frame layouts as "still to land" when
+  all three had shipped. Rewritten honestly: what's done, and what is genuinely
+  pending (hand-built starter theme packs, landscape screens, a browser test
+  rig).
+- `docs/ARCHITECTURE.md` still carried a v0.10 header. Every version surface —
+  `package.json`, README, CHANGELOG, `/api/health`, the boot banner, SECURITY.md
+  and the architecture doc — now agrees.
+
+**Testing**
+
+- `scripts/smoke.js` v2.0 — 133 checks to 173, one or more per fix above, including
+  two new boots: a stock install with no `MEDIA_DIR` and no `DATA_DIR` (proving
+  the defaults and the store migration), and an install with only the legacy
+  media folder (proving the fallback). The token-leak fix is proved end to end
+  against a genuine first-run install.
+
 ## 1.01 — 2026-08-06 (conductor v5.01 · app v3.83 · engine v0.91 · fx v1.61)
 
 **Security fixes.** Two independent penetration audits were run against v1.00

@@ -6,7 +6,11 @@ config.json
 config.json.*.bak
 
 # --- runtime data (machine-local) ---
-data/
+# v1.03: DATA_DIR is the single writable state root (stores, backups, thumbs,
+# admin-token). The FOLDER is tracked (docker/compose.yaml mounts it); its
+# CONTENTS never are.
+data/*
+!data/.gitkeep
 state.json
 modeposters.json
 _inventory.json
@@ -14,8 +18,14 @@ _backups/
 .thumbs/
 
 # --- user media (yours, not the repo's) ---
-media/
+# v1.03: same deal — media/ is the default MEDIA_DIR and compose mounts it, so
+# the folder must exist in a fresh clone; nothing inside it is ever committed.
+media/*
+!media/.gitkeep
 Photos/
+# score-card portraits (written by POST /api/people/photo, served from /people/)
+people/*
+!people/.gitkeep
 sounds/*
 !sounds/starter/
 overlays/*

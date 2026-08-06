@@ -1,6 +1,30 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v5.01 (community release v1.01)
+   Roomscape — Conductor backend  v5.03 (community release v1.03)
+   v5.03: RS-SEC v1.03 — fixes found during the pre-release documentation
+          inventory (still nothing deployed publicly). GET /api/log was an
+          ungated open read of the console ring buffer, and the ring is
+          installed BEFORE the auth block prints the first-run admin token —
+          so `GET /api/log?q=admin` handed the token to any unauthenticated LAN
+          client; the token now prints via process.stdout.write (which the ring
+          does not wrap) and every buffered line is scrubbed of the live
+          secrets, and /api/log needs the token. Internal loopback POSTs (party
+          game TTS narration, automatic score posting, the Time Machine
+          restore) now carry the admin token — with the gate ON (the default)
+          they were 401ing silently. MEDIA_DIR defaults to <APP_DIR>/media,
+          matching .env.example and compose (was the private install's
+          "Images & Videos", which does not exist in a stock Docker install);
+          the old name is still honoured if it is the one that exists. DATA_DIR
+          is now the single writable state root: scores/rules-data/playlists/
+          social-effects/viz/mediafx/modeposters/variants/scenedims, the backup
+          folder and the thumbnail cache resolve under it, with a one-shot
+          migration from the legacy locations (APP_DIR, which is :ro under
+          Docker, and __dirname, which is inside the container). backupFile()
+          is loud on failure and the profiles save reports it. Plus:
+          settings.weather.pollMinutes is honoured live, POST /api/schedule
+          rejects unknown mode ids, the dead /control.html + /editor.html
+          allow-list entries are gone (a missing app.html now explains itself),
+          and the client's 20 s WS ping gets a pong. See CHANGELOG 1.03.
    v5.01: RS-SEC v1.01 — security fix pass over the two pre-release penetration
           audits (nothing had ever been deployed publicly). Static web root is
           now an explicit allow-list (was: any file under APP_DIR, which leaked
@@ -75,16 +99,83 @@ const APP_DIR = process.env.APP_DIR || __dirname;
 const LIB_DIR = fs.existsSync(path.join(__dirname, 'conductor-lib'))
   ? path.join(__dirname, 'conductor-lib')
   : path.join(process.env.APP_DIR || path.join(__dirname, 'web'), 'conductor-lib');
-const MEDIA_DIR = process.env.MEDIA_DIR || path.join(APP_DIR, 'Images & Videos');
-const OVERLAY_DIR = process.env.OVERLAY_DIR || path.join(APP_DIR, 'overlays');
-const THEMES_DIR = process.env.THEMES_DIR || path.join(APP_DIR, 'themes');   // RS-THEMES v1: community theme packs (one folder = one pack)
-const BACKUP_DIR = path.join(APP_DIR, '_backups');
-const THUMB_DIR = path.join(APP_DIR, '.thumbs');
 /* RS-SEC v1.01 (F1b): writable runtime data (admin-token, and under Docker the
    state/profiles stores). Defaults to APP_DIR/data for bare-Node installs;
    docker/compose.yaml sets DATA_DIR=/app/data — OUTSIDE the web root — so the
-   token file can never sit under a directory the HTTP server can reach. */
+   token file can never sit under a directory the HTTP server can reach.
+   RS-SEC v1.03 (G4): DATA_DIR is now THE writable state root — every JSON store
+   this process writes, the backup folder and the thumbnail cache resolve under
+   it. Before v1.03 they were scattered between APP_DIR (mounted :ro under
+   Docker -> silent EROFS) and __dirname (/app inside the container -> lost on
+   every `docker compose up --force-recreate`). */
 const DATA_DIR = process.env.DATA_DIR || path.join(APP_DIR, 'data');
+/* RS-SEC v1.03 (G3): MEDIA_DIR default. The code shipped with the private
+   install's folder name ("Images & Videos") while .env.example and
+   docker/compose.yaml both say `media/` — so a stock Docker install scanned a
+   folder that does not exist and found zero scenes. Default is now
+   <APP_DIR>/media; the old name is honoured ONLY when it exists and media/
+   does not, so an install that predates this keeps working untouched. */
+var MEDIA_DIR_WHY = 'default';
+const MEDIA_DIR = (function () {
+  if (process.env.MEDIA_DIR) { MEDIA_DIR_WHY = 'env MEDIA_DIR'; return process.env.MEDIA_DIR; }
+  const std = path.join(APP_DIR, 'media'), legacy = path.join(APP_DIR, 'Images & Videos');
+  try {
+    if (!fs.existsSync(std) && fs.existsSync(legacy)) { MEDIA_DIR_WHY = 'legacy "Images & Videos" folder (media/ absent)'; return legacy; }
+  } catch (e) {}
+  MEDIA_DIR_WHY = 'default <APP_DIR>/media';
+  return std;
+})();
+const OVERLAY_DIR = process.env.OVERLAY_DIR || path.join(APP_DIR, 'overlays');
+const THEMES_DIR = process.env.THEMES_DIR || path.join(APP_DIR, 'themes');   // RS-THEMES v1: community theme packs (one folder = one pack)
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, '_backups');   // RS-SEC v1.03 (G4): was APP_DIR/_backups — EROFS under Docker, and backupFile() swallowed it
+const THUMB_DIR = process.env.THUMB_DIR || path.join(DATA_DIR, '.thumbs');      // RS-SEC v1.03 (G4): same story — APP_DIR is :ro, so every picker thumbnail failed to cache
+/* RS-SEC v1.03 (G4): resolve a JSON store under DATA_DIR, migrating a legacy
+   copy in on first boot. Legacy homes, in order: <APP_DIR>/<name> (bare-Node
+   installs and the :ro Docker mount) and <__dirname>/<name> (the container's
+   own /app, which is writable but disappears on recreate). Idempotent: once the
+   DATA_DIR copy exists nothing is ever copied again. */
+function dataStore(name) {
+  const target = path.join(DATA_DIR, name);
+  try {
+    if (fs.existsSync(target)) return target;
+    const legacies = [path.join(APP_DIR, name), path.join(__dirname, name)];
+    for (const legacy of legacies) {
+      if (legacy === target) continue;
+      if (!fs.existsSync(legacy)) continue;
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.copyFileSync(legacy, target);
+      console.log('[store] migrated ' + legacy + ' -> ' + target);
+      return target;
+    }
+  } catch (e) { console.error('[store] could not migrate ' + name + ' into ' + DATA_DIR + ': ' + ((e && e.message) || e)); }
+  return target;
+}
+/* RS-SEC v1.03 (G4): one-shot backup-folder migration. Copying a huge history
+   at boot would be worse than the problem, so a legacy folder with more than
+   1000 entries is left where it is and merely pointed at in the log. */
+(function migrateBackupDir() {
+  try {
+    if (process.env.BACKUP_DIR) return;
+    const legacy = path.join(APP_DIR, '_backups');
+    if (legacy === BACKUP_DIR || fs.existsSync(BACKUP_DIR) || !fs.existsSync(legacy)) return;
+    const entries = fs.readdirSync(legacy);
+    if (entries.length > 1000) { console.log('[store] legacy backups left in place at ' + legacy + ' (' + entries.length + ' entries) — new backups go to ' + BACKUP_DIR); return; }
+    fs.cpSync(legacy, BACKUP_DIR, { recursive: true });
+    console.log('[store] migrated backups ' + legacy + ' -> ' + BACKUP_DIR + ' (' + entries.length + ' entries)');
+  } catch (e) { console.error('[store] backup-folder migration failed: ' + ((e && e.message) || e)); }
+})();
+/* RS-SEC v1.03 (G2): internal loopback POSTs (the party-game narrator, the
+   automatic score post, the Time Machine's profiles apply) go through the same
+   HTTP server as everyone else — which means the admin gate 401s them. They
+   were silently failing with auth ON, which is the DEFAULT. The token is read
+   LAZILY here: the RS-AUTH block that sets global.__rsAdminToken is appended at
+   the very bottom of this file, long after these callers are defined. */
+function rsSelfHeaders(extra) {
+  const h = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
+  const t = global.__rsAdminToken || process.env.ADMIN_TOKEN || '';
+  if (t) h['x-rs-token'] = t;
+  return h;
+}
 let thumbLib = null, thumbKind = 'none';                    // optional: npm i sharp  (or jimp)
 try { thumbLib = require('sharp'); thumbKind = 'sharp'; } catch (e) {}
 if (!thumbLib) { try { thumbLib = require('jimp'); thumbKind = 'jimp'; } catch (e) {} }
@@ -299,7 +390,27 @@ function acceptState(incoming) {
 }
 
 function readJSON(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return null; } }
-function backupFile(file) { try { if (!fs.existsSync(file)) return; fs.mkdirSync(BACKUP_DIR, { recursive: true }); const ts = new Date().toISOString().replace(/[:.]/g, '-'); fs.copyFileSync(file, path.join(BACKUP_DIR, path.basename(file) + '.' + ts + '.bak')); } catch (e) {} }
+/* RS-SEC v1.03 (G4): backupFile used to swallow every error, so under Docker
+   (BACKUP_DIR inside the :ro mount) a profiles save reported success having
+   written no backup at all — the one safety net for the store, silently gone.
+   It is now LOUD: the failure is logged and recorded, and the profiles write
+   path reports it back to the caller as a `warning` field. Returns true when a
+   backup exists (or none was needed), false when one was wanted and failed. */
+let lastBackupError = null;
+function backupFile(file) {
+  try { if (!fs.existsSync(file)) return true; } catch (e) { return true; }
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.copyFileSync(file, path.join(BACKUP_DIR, path.basename(file) + '.' + ts + '.bak'));
+    lastBackupError = null;
+    return true;
+  } catch (e) {
+    lastBackupError = 'backup of ' + path.basename(file) + ' into ' + BACKUP_DIR + ' failed: ' + ((e && e.message) || e);
+    console.error('[backup] ' + lastBackupError + ' — the save is going ahead WITHOUT a backup');
+    return false;
+  }
+}
 
 let profiles = Object.assign({}, DEFAULT_PROFILES), tagmap = Object.assign({}, DEFAULT_TAGMAP);
 (function loadProfiles() {
@@ -616,6 +727,12 @@ function handleClientMessage(client, text) {
   let d; try { d = JSON.parse(text); } catch (e) { return; }
   if (!d || !d.ie) return;
   if (d.type === 'hello') { if (d.frame) client.frame = d.frame; wsSend(client.sock, { ie: true, type: 'state', state: state, t: Date.now() }); }   // v1.4: frames identify themselves
+  /* RS-SEC v1.03 (G5): engine.js pings every 20 s as its liveness watchdog and
+     force-closes after 90 s of silence. The server used to drop the ping on the
+     floor — the watchdog only ever worked because the 2 s clock broadcast
+     happened to keep the socket noisy. Answer it, so the ping means what it
+     says even if the clock tick is ever made conditional. */
+  else if (d.type === 'ping') { wsSend(client.sock, { ie: true, type: 'pong', t: Date.now() }); }
   else if (d.type === 'state' && d.state) {
     /* RS-SEC v1.01 (F2a): inbound state is a full room-state MUTATION — it
        persists, rebroadcasts to every wall, and drives Home Assistant. It used
@@ -972,7 +1089,20 @@ function pollWeather() {
     weather.sunFactor = el == null ? 1 : el < -4 ? 0.94 : el < 10 ? 0.97 : 1;
   });
 }
-setInterval(pollWeather, Math.max(2, ((DEFAULT_SETTINGS.weather.pollMinutes) || 10)) * 60000);
+/* RS-SEC v1.03 (G5): settings.weather.pollMinutes was DEAD — this used to be a
+   fixed setInterval built from DEFAULT_SETTINGS, so editing the setting changed
+   nothing until a restart, and even then it was ignored. A self-rearming
+   timeout reads the LIVE value on every tick, so a change takes effect from the
+   next poll onwards with no restart. Floor of 2 minutes kept. */
+function weatherEveryMs() {
+  var w = (typeof settings !== 'undefined' && settings && settings.weather) || {};
+  var m = parseFloat(w.pollMinutes);
+  if (!isFinite(m) || m <= 0) m = parseFloat((DEFAULT_SETTINGS.weather || {}).pollMinutes) || 10;
+  return Math.max(2, m) * 60000;
+}
+let weatherTimer = null;
+function weatherLoop() { try { pollWeather(); } finally { weatherTimer = setTimeout(weatherLoop, weatherEveryMs()); } }
+weatherTimer = setTimeout(weatherLoop, weatherEveryMs());
 setTimeout(pollWeather, 8000);
 /* ==================== end v2.0 automations ==================== */
 
@@ -1070,10 +1200,13 @@ const HAS_APP = fs.existsSync(path.join(APP_DIR, 'app.html'));   // v1.4: Play &
    dot-dot for good measure). Media, sounds, decks, photos, overlays and
    thumbnails keep their own dedicated, containment-checked routes further up;
    nothing else under the repo root is reachable over HTTP. */
+/* RS-SEC v1.03 (G5): /control.html and /editor.html were dropped from this repo
+   before v1.00 — allow-listing files that do not exist is at best noise and at
+   worst a future foot-gun, so they are gone. (The legacy control deck lives on
+   as a lens inside app.js; nothing links to a standalone page.) */
 const STATIC_PAGES = new Set([
   '/app.html', '/app.js', '/engine.js', '/fx.js', '/fx-audio.js',
   '/frame.html', '/scores.html',
-  '/control.html', '/editor.html',           // legacy standalone pages (served if present)
   '/favicon.ico', '/robots.txt'
 ]);
 const STATIC_DIRS = ['/app/', '/people/'];   // app/ = future split assets · people/ = score-card portraits written by POST /api/people/photo
@@ -1165,7 +1298,7 @@ function coreHandler(req, res) {
   }
 
   if (p.startsWith('/api/')) {
-    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.01', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
+    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.03', repo: '1.03', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
     if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST });   // v2.62: wall shape, single source of truth · RS-CONFIG v1: roles/orientation/atRest
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, state);
     if (p === '/api/scenes') return sendJSON(res, 200, { count: Object.keys(landIndex).length, thumbs: thumbKind, scenes: Object.keys(landIndex).sort().map(function (k) { const l = landIndex[k]; const e = encodeURIComponent(l[0]); const d = path.dirname(l[0]).replace(/\\/g, '/'); const dm = (global.__rsDims || {})[l[0]]; const ori = (dm && dm.w && dm.h) ? (dm.w > dm.h ? 'l' : (dm.h > dm.w ? 'p' : 's')) : null; return { key: k, count: l.length, dir: (d === '.' ? '' : d), ori: ori, sample: '/media/' + e, thumb: '/thumb/' + encodeURIComponent(path.basename(l[0])) + '?src=media&w=320&p=' + e, video: VID_RE.test(l[0]) }; }) });   // v2.40 dir = folder path; v2.41 ori = p|l|s from RS-SCENE-DIMS (null while unprobed / video)
@@ -1253,7 +1386,7 @@ function coreHandler(req, res) {
     if (p === '/api/profiles' && req.method === 'GET') return sendJSON(res, 200, { profiles, tagmap, settings: redactSettings(settings) });   // RS-REDACT v1
     if (p === '/api/profiles' && req.method === 'POST') return readBody(req, function (b) {
       if (!b || !b.profiles) return sendJSON(res, 400, { ok: false, error: 'need {profiles, tagmap}' });
-      backupFile(PROFILES_FILE);
+      const bakOk = backupFile(PROFILES_FILE);   // RS-SEC v1.03 (G4): a failed backup is reported, not swallowed
       profiles = b.profiles; if (b.tagmap) tagmap = b.tagmap;
       if (b.settings) {
         /* RS-REDACT v1: GET /api/profiles serves settings WITHOUT music.token, and the
@@ -1288,7 +1421,11 @@ function coreHandler(req, res) {
       state._imgSig = null; resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chroma = settings.chroma;
       lastFxSig = state.game + '|' + state.mode; broadcastState();
       if (werr) return sendJSON(res, 500, { ok: false, error: 'write failed: ' + werr.message });
-      sendJSON(res, 200, { ok: true, count: Object.keys(profiles).length });
+      /* RS-SEC v1.03 (G4): the save itself succeeded, so don't fail it — but say
+         plainly that the rollback copy is missing, so the UI can warn instead of
+         showing an unqualified "Saved". */
+      sendJSON(res, 200, bakOk ? { ok: true, count: Object.keys(profiles).length }
+                               : { ok: true, count: Object.keys(profiles).length, warning: lastBackupError || 'backup failed' });
     });
     if (p === '/api/rescan') { scanMedia(); scanOverlays(); return sendJSON(res, 200, { ok: true, scenes: Object.keys(landIndex).length, overlays: overlayList.length }); }
     if (p === '/api/poster' && req.method === 'POST') {   // v1.9: save a client-generated video poster into .thumbs
@@ -1573,7 +1710,27 @@ function coreHandler(req, res) {
     return sendJSON(res, 404, { ok: false, error: 'unknown endpoint' });
   }
 
-  let rel = decodeURIComponent(p); if (rel === '/') rel = HAS_APP ? '/app.html' : '/control.html'; if (rel === '/frame') rel = '/frame.html';
+  let rel = decodeURIComponent(p);
+  /* RS-SEC v1.03 (G5): the old fallback for a missing app.html was
+     '/control.html' — a file this repo does not ship, so the answer was a bare
+     404 with no clue what had gone wrong. Say it plainly instead. */
+  if (rel === '/') {
+    if (!HAS_APP) {
+      res.writeHead(500, corsHdr(req, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }));
+      res.end('<!doctype html><meta charset="utf-8"><title>Roomscape — app.html missing</title>'
+        + '<body style="font:16px/1.5 system-ui;background:#111;color:#eee;padding:8vh 6vw;max-width:44em">'
+        + '<h1>Roomscape can\'t find <code>app.html</code></h1>'
+        + '<p>The Conductor is running, but the app page is not where it expects it:</p>'
+        + '<p><code>' + String(APP_DIR).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }) + '</code></p>'
+        + '<p>Under Docker that folder is the repository, mounted at <code>/app/web</code> — check the '
+        + '<code>volumes:</code> entry in <code>docker/compose.yaml</code>. Running bare Node? Start the Conductor '
+        + 'from the repository folder, or set <code>APP_DIR</code> to it.</p>'
+        + '<p>The API itself is up: <a style="color:#8cf" href="/api/health">/api/health</a>.</p>');
+      return;
+    }
+    rel = '/app.html';
+  }
+  if (rel === '/frame') rel = '/frame.html';
   /* RS-SEC v1.01 (F1): allow-list, not "anything inside APP_DIR" — see STATIC_PAGES above. */
   if (!staticAllowed(rel)) { res.writeHead(404, corsHdr(req, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' })); res.end('Not found'); return; }
   const file = path.join(APP_DIR, path.normalize(rel).replace(/^(\.\.[\/\\])+/, ''));
@@ -1588,13 +1745,13 @@ resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chrom
 setTimeout(directorOnModeChange, 2000);   // v1.2: start the current mode's audio director after boot
 server.listen(PORT, () => {
   console.log('====================================================');
-  console.log('  Roomscape Conductor  v5.01 (community v1.01)');   /* RS-SEC v1.01 (F14): the banner had been left at v4.74/v0.50 */
+  console.log('  Roomscape Conductor  v5.03 (community v1.03)');   /* RS-SEC v1.01 (F14): the banner had been left at v4.74/v0.50 */
   console.log('  modules : ' + LIB_MODULES.join(', ') + '  (conductor-lib @ ' + LIB_DIR + ')');
-  console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — app.html missing, serving control.html') + ')');
+  console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — WARNING: app.html NOT FOUND in APP_DIR') + ')');
   console.log('  app   : ' + APP_DIR);
-  console.log('  media : ' + MEDIA_DIR + '  (' + Object.keys(landIndex).length + ' scenes)');
-  console.log('  control : http://localhost:' + PORT + '/control.html?ws=auto');
-  console.log('  a frame : http://localhost:' + PORT + '/frame.html?frame=L1&ws=auto');
+  console.log('  data  : ' + DATA_DIR + '  (writable state: stores, backups, thumbs, admin-token)');   // RS-SEC v1.03 (G4)
+  console.log('  media : ' + MEDIA_DIR + '  (' + Object.keys(landIndex).length + ' scenes, from ' + MEDIA_DIR_WHY + ')');   // RS-SEC v1.03 (G3)
+  console.log('  a frame : http://localhost:' + PORT + '/frame.html?frame=' + (LAYOUT.frames[0] || 'L1') + '&ws=auto');   // RS-SEC v1.03 (G5): the /control.html line pointed at a page this repo does not ship
   console.log('  MQTT    : ' + (process.env.MQTT_URL || 'disabled'));
   console.log('  HA      : ' + (haOn() ? HA_URL : 'disabled — set HA_URL + HA_TOKEN'));
   console.log('  thumbs  : ' + (thumbLib ? thumbKind + ' (generating in background)' : 'disabled — run: npm install sharp'));
@@ -2154,7 +2311,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
   try {
     var fs = require('fs'), path = require('path');
     var BASE = (typeof APP_DIR !== 'undefined' && APP_DIR) || __dirname;
-    var RULES_FILE = path.join(BASE, 'rules-data.json');
+    var RULES_FILE = dataStore('rules-data.json');   // RS-SEC v1.03 (G4): writable state root
     var rulesState = { show: false, game: null, videoId: null, name: null, ts: 0 };
     function log(m) { try { console.log('[rules-revive] ' + m); } catch (e) {} }
     function readRules() {
@@ -2233,7 +2390,21 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
    init failures and the [ha] TV-power decisions visible without shell access —
    the thing that turned several bugs this month into multi-hour investigations.
    Non-invasive: wraps console.log/warn/error (still prints to the real console),
-   registers one read-only route. Appended to conductor.js. */
+   registers one read-only route. Appended to conductor.js.
+   RS-SEC v1.03 (G1): two things were badly wrong here.
+     (a) This wrapper is installed BEFORE the RS-AUTH block prints the
+         first-run admin token, so on a fresh install the token itself sat in
+         the ring — and GET /api/log was an UNGATED open GET, so
+         `GET /api/log?q=admin` handed the admin token to any unauthenticated
+         device on the LAN: a complete bypass of the whole gate. The token is
+         now printed through process.stdout.write (which this wrapper does NOT
+         patch — only console.log/info/warn/error are), AND every line pushed
+         into the ring is scrubbed of the live secrets, belt and braces, because
+         HA_TOKEN / MA_TOKEN / ADMIN_TOKEN can reach a log line by other routes
+         (an HA error echoing a URL, a stack trace, a future careless log call).
+     (b) GET /api/log is now token-gated in the RS-AUTH block, alongside
+         GET /api/ha/entities — logs are diagnostics and carry filesystem
+         paths, HA entity ids and mode names. */
 ;(function () {
   try {
     if (global.__rsLogBuf) { /* already installed */ }
@@ -2241,6 +2412,19 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       var RING = [];
       var CAP = 500;
       global.__rsLogBuf = RING;
+      /* Read the secrets LAZILY: global.__rsAdminToken is set by the RS-AUTH
+         block appended at the bottom of this file, long after this runs. */
+      function scrub(s) {
+        try {
+          var secrets = [global.__rsAdminToken, process.env.ADMIN_TOKEN, process.env.HA_TOKEN, process.env.MA_TOKEN];
+          for (var i = 0; i < secrets.length; i++) {
+            var v = secrets[i];
+            if (typeof v === 'string' && v.length >= 8 && s.indexOf(v) >= 0) s = s.split(v).join('***');
+          }
+        } catch (e) {}
+        return s;
+      }
+      global.__rsLogScrub = scrub;
       ['log', 'info', 'warn', 'error'].forEach(function (k) {
         var orig = console[k] ? console[k].bind(console) : function () {};
         console[k] = function () {
@@ -2250,13 +2434,13 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
               var a = arguments[i];
               parts.push(typeof a === 'string' ? a : (function () { try { return JSON.stringify(a); } catch (e) { return String(a); } })());
             }
-            RING.push({ t: Date.now(), k: k, m: parts.join(' ') });
+            RING.push({ t: Date.now(), k: k, m: scrub(parts.join(' ')) });
             if (RING.length > CAP) RING.shift();
           } catch (e) {}
           return orig.apply(console, arguments);
         };
       });
-      try { console.log('[logbuf] capturing console -> GET /api/log'); } catch (e) {}
+      try { console.log('[logbuf] capturing console -> GET /api/log (admin token required; secrets scrubbed)'); } catch (e) {}
     }
 
     if (typeof server === 'undefined' || !server || !server.prependListener) return;
@@ -2407,7 +2591,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function(){
   try{
     var fs = require('fs'), path = require('path');
-    var FILE = path.join(__dirname, 'mediafx.json');
+    var FILE = dataStore('mediafx.json');   // RS-SEC v1.03 (G4): was __dirname (= /app inside the container — lost on recreate)
     var DB = { imgAdjust:{}, overlayFx:{} };
     try{ if (fs.existsSync(FILE)){ var j = JSON.parse(fs.readFileSync(FILE,'utf8'))||{}; DB.imgAdjust=j.imgAdjust||{}; DB.overlayFx=j.overlayFx||{}; } }
     catch(e){ console.error('[mediafx] read failed:', e && e.message); }
@@ -2452,7 +2636,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function(){
   try{
     var fs = require('fs'), path = require('path');
-    var FILE = path.join(__dirname, 'modeposters.json');
+    var FILE = dataStore('modeposters.json');   // RS-SEC v1.03 (G4)
     var POSTERS = {};
     try{ if (fs.existsSync(FILE)) POSTERS = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {}; }
     catch(e){ console.error('[posters] read failed:', e && e.message); POSTERS = {}; }
@@ -2510,7 +2694,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     var fs = require('fs'), path = require('path');
     var sharp = null; try { sharp = require('sharp'); } catch (e) {}
     if (!sharp) { console.log('[dims] sharp unavailable — orientation filter disabled'); return; }
-    var FILE = path.join(__dirname, 'scenedims.json');
+    var FILE = dataStore('scenedims.json');   // RS-SEC v1.03 (G4)
     var DIMS = {};
     try { if (fs.existsSync(FILE)) DIMS = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {}; } catch (e) { DIMS = {}; }
     global.__rsDims = DIMS;
@@ -2945,7 +3129,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     var fs = require('fs'), path = require('path');
     var R = global.__rsRouter; if (!R) { console.log('[scores] router missing — skipped'); return; }
     var BASE = (typeof APP_DIR !== 'undefined' && APP_DIR) || __dirname;
-    var FILE = path.join(BASE, 'scores.json');
+    var FILE = dataStore('scores.json');   // RS-SEC v1.03 (G4): was APP_DIR (:ro under Docker -> every score write EROFS)
     var DOC = { players: [], results: [] };
     try { if (fs.existsSync(FILE)) { var j0 = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {}; DOC.players = j0.players || []; DOC.results = j0.results || []; } } catch (e) { console.error('[scores] read failed:', e && e.message); }
     function save() { try { if (fs.existsSync(FILE) && typeof backupFile === 'function') backupFile(FILE); fs.writeFileSync(FILE, JSON.stringify(DOC, null, 2), 'utf8'); } catch (e) { console.error('[scores] write failed:', e && e.message); } }
@@ -3085,7 +3269,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function () {
   try {
     var fs = require('fs'), path = require('path');
-    var FILE = path.join(__dirname, 'variants.json');
+    var FILE = dataStore('variants.json');   // RS-SEC v1.03 (G4)
     var DB = { modes: {} };
     try { if (fs.existsSync(FILE)) DB = JSON.parse(fs.readFileSync(FILE, 'utf8')) || { modes: {} }; } catch (e) { DB = { modes: {} }; }
     function save() { try { fs.writeFileSync(FILE, JSON.stringify(DB, null, 2), 'utf8'); } catch (e) { console.error('[variants] save failed:', e && e.message); } }
@@ -3196,12 +3380,12 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function () {
   try {
     var fs = require('fs'), path = require('path');
-    var FILE = (function(){ var d=(typeof APP_DIR!=='undefined'&&APP_DIR)||__dirname; var p1=path.join(d,'playlists.json'), p0=path.join(__dirname,'playlists.json'); try{ if(p1!==p0 && !fs.existsSync(p1) && fs.existsSync(p0)) fs.copyFileSync(p0,p1); }catch(e){} return p1; })() /* rs-storepaths v1 */;
+    var FILE = dataStore('playlists.json');   // RS-SEC v1.03 (G4): supersedes rs-storepaths v1 (which migrated INTO the read-only mount)
     var DB = { modes: {} };
     try { if (fs.existsSync(FILE)) DB = JSON.parse(fs.readFileSync(FILE, 'utf8')) || { modes: {} }; } catch (e) { DB = { modes: {} }; }
     // one-time: inherit staggerS values from the retired variants.json
     try {
-      var VOLD = path.join(__dirname, 'variants.json');
+      var VOLD = dataStore('variants.json');
       if (fs.existsSync(VOLD)) {
         var old = JSON.parse(fs.readFileSync(VOLD, 'utf8')) || {};
         Object.keys(old.modes || {}).forEach(function (g) {
@@ -3322,7 +3506,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function () {
   try {
     var fs = require('fs'), path = require('path');
-    var FILE = (function(){ var d=(typeof APP_DIR!=='undefined'&&APP_DIR)||__dirname; var p1=path.join(d,'social-effects.json'), p0=path.join(__dirname,'social-effects.json'); try{ if(p1!==p0 && !fs.existsSync(p1) && fs.existsSync(p0)) fs.copyFileSync(p0,p1); }catch(e){} return p1; })() /* rs-storepaths v1 */;
+    var FILE = dataStore('social-effects.json');   // RS-SEC v1.03 (G4): supersedes rs-storepaths v1
     var EVENTS = { softflash: 1, bloom: 1, ignite: 1, lightning: 1, shake: 1 };
     function clean(list) {
       if (!Array.isArray(list)) return null;
@@ -3436,7 +3620,10 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     var fs = require('fs'), path = require('path'), EE = require('events');
     var PFILE = (typeof PROFILES_FILE !== 'undefined' && PROFILES_FILE) ||
                 path.join((typeof APP_DIR !== 'undefined' && APP_DIR) || __dirname, 'profiles.json');
-    var HDIR = path.join(path.dirname(PFILE), '_backups', 'profiles-history');
+    /* RS-SEC v1.03 (G4): under the single writable state root. Was
+       dirname(PROFILES_FILE)/_backups, which for a bare-Node install put the
+       history somewhere different from every other backup. */
+    var HDIR = path.join((typeof BACKUP_DIR !== 'undefined' && BACKUP_DIR) || path.join(path.dirname(PFILE), '_backups'), 'profiles-history');
     try { console.log('[pguard] profiles file: ' + PFILE + (fs.existsSync(PFILE) ? ' (found)' : ' (MISSING — gate cannot work!)')); } catch (e) {}
 
     function snapshot(tag) {
@@ -3638,7 +3825,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     if (typeof server === 'undefined' || !server || !server.prependListener) return;
     var fs = require('fs'), path = require('path');
     var BASE = (typeof APP_DIR !== 'undefined' && APP_DIR) || __dirname;
-    var FILE = path.join(BASE, 'rules-data.json');
+    var FILE = dataStore('rules-data.json');   // RS-SEC v1.03 (G4)
     var REV = 0;
     var ROLES = { video: 1, setup: 1, turn: 1, win: 1, tips: 1, none: 1 };
     var FRAMES = LAYOUT.frames;   // v2.62: single source of truth
@@ -3691,7 +3878,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
           var payload = all.games ? all : (all.rules ? all : games);
           if (all.games) all.games = games; else if (all.rules) all.rules = games;
           try {
-            var bdir = path.join(BASE, '_backups', 'rules-history');
+            var bdir = path.join((typeof BACKUP_DIR !== 'undefined' && BACKUP_DIR) || path.join(BASE, '_backups'), 'rules-history');   // RS-SEC v1.03 (G4)
             fs.mkdirSync(bdir, { recursive: true });
             if (fs.existsSync(FILE)) fs.copyFileSync(FILE, path.join(bdir, 'rules-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json'));
             var old = fs.readdirSync(bdir).filter(function (f) { return /^rules-/.test(f); }).sort();
@@ -3749,7 +3936,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
 ;(function () {
   try {
     var fs = require('fs'), path = require('path');
-    var FILE = (function(){ var d=(typeof APP_DIR!=='undefined'&&APP_DIR)||__dirname; var p1=path.join(d,'viz.json'), p0=path.join(__dirname,'viz.json'); try{ if(p1!==p0 && !fs.existsSync(p1) && fs.existsSync(p0)) fs.copyFileSync(p0,p1); }catch(e){} return p1; })() /* rs-storepaths v1 */;
+    var FILE = dataStore('viz.json');   // RS-SEC v1.03 (G4): supersedes rs-storepaths v1
     var STYLES = { cathedral: 1, ribbon: 1, fountain: 1, aurora: 1, pond: 1, vinyl: 1, mandala: 1, fireflies: 1, skyline: 1, fireplace: 1, wave: 1, stadium: 1, beatsweep: 1, constellation: 1, shuffle: 1 };
     var FRAMES = { L1: 1, L2: 1, L3: 1, R1: 1, R2: 1, R3: 1 };
     function load() { try { return JSON.parse(fs.readFileSync(FILE, 'utf8')) || { modes: {} }; } catch (e) { return { modes: {} }; } }
@@ -3931,8 +4118,11 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             if (!applied.length) return out(404, { ok: false, error: 'none of those modes exist in that backup' });
             var payload = JSON.stringify({ profiles: cmap, tagmap: cur.tagmap, settings: cur.settings });
             // apply through the NATIVE handler so memory/broadcast/guard/backup all engage
+            /* RS-SEC v1.03 (G2): the admin gate sits in front of this loopback
+               call too — without the token the whole Time Machine restore 401'd
+               and reported "apply failed (401)". Token read lazily. */
             var preq = http.request({ host: '127.0.0.1', port: SELF_PORT, path: '/api/profiles', method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, function (pres) {
+              headers: rsSelfHeaders({ 'Content-Length': Buffer.byteLength(payload) }) }, function (pres) {
               var rb = ''; pres.on('data', function (c) { rb += c; });
               pres.on('end', function () {
                 if (pres.statusCode === 200) { try { console.log('[timemachine] restored ' + applied.join(', ') + ' from ' + f2); } catch (e) {}
@@ -4336,6 +4526,14 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
               var tm = /^(\d{1,2}):(\d{2})$/.exec(String(r.time || ''));
               if (!tm || +tm[1] > 23 || +tm[2] > 59) return out(400, { ok: false, error: 'rule ' + i + ': time must be HH:MM' });
               if (typeof r.mode !== 'string' || !r.mode) return out(400, { ok: false, error: 'rule ' + i + ': need mode' });
+              /* RS-SEC v1.03 (G5): mode was never checked, so a typo saved
+                 happily and then fired every day into applyProfile() with an id
+                 that does not exist — a silent no-op the user cannot see. The
+                 at-rest id is always allowed even if it is not a stored profile.
+                 effProfile() is used (not `profiles[...]`) so theme-pack modes,
+                 which are in-memory only, validate too. */
+              if (r.mode !== AT_REST && !effProfile(r.mode))
+                return out(400, { ok: false, error: 'rule ' + i + ': unknown mode "' + String(r.mode).slice(0, 60) + '"' });
               var days = Array.isArray(r.days) ? r.days.map(Number).filter(function (d) { return d >= 0 && d <= 6 && d === Math.floor(d); }) : [];
               rules.push({ days: days, time: String(tm[1]).padStart(2, '0') + ':' + tm[2], mode: r.mode, name: (typeof r.name === 'string' && r.name) ? r.name.slice(0, 60) : undefined });
             }
@@ -4672,9 +4870,15 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     function selfPost(pathP, obj) {
       try {
         var payload = JSON.stringify(obj || {});
+        /* RS-SEC v1.03 (G2): carry the admin token. Without it the gate 401s our
+           own narration (/api/tts) and the automatic score post — silently,
+           because the response was resumed and discarded. Token read lazily. */
         var rq = httpPG.request({ host: '127.0.0.1', port: PORT, path: pathP, method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
-          function (r2) { r2.resume(); });
+          headers: rsSelfHeaders({ 'Content-Length': Buffer.byteLength(payload) }) },
+          function (r2) {
+            if (r2.statusCode >= 400) { try { console.error('[games] internal POST ' + pathP + ' -> ' + r2.statusCode + (r2.statusCode === 401 ? ' (admin token missing on the loopback call)' : '')); } catch (e) {} }
+            r2.resume();
+          });
         rq.on('error', function () {});
         rq.end(payload);
       } catch (e) {}
@@ -5492,9 +5696,24 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         fs.mkdirSync(path.dirname(TOK_FILE), { recursive: true });
         fs.writeFileSync(TOK_FILE, TOKEN + '\n', { mode: 0o600 });
       } catch (e) { console.error('[auth] could not write ' + TOK_FILE + ': ' + (e && e.message)); }
-      console.log('[auth] admin token (first run): ' + TOKEN + ' — keep it; also in data/admin-token');
+      /* RS-SEC v1.03 (G1a): print through process.stdout.write, NOT console.log.
+         RS-LOG-BUFFER wraps console.log/info/warn/error and keeps the last 500
+         lines in memory for GET /api/log — so this one line used to park the
+         admin token in a buffer that any LAN device could read. stdout.write is
+         untouched by that wrapper, so the token still appears in the boot log /
+         `docker logs roomscape` (which is where the installer reads it) but
+         never enters the ring. The ring's own scrubber is the second line of
+         defence if anything else ever logs it. */
+      var firstRunLine = '[auth] admin token (first run): ' + TOKEN + ' — keep it; also in ' + TOK_FILE + '\n';
+      try { process.stdout.write(firstRunLine); } catch (e) { try { console.log('[auth] admin token (first run) written to ' + TOK_FILE + ' — read it there'); } catch (_) {} }
     }
     global.__rsAdminToken = TOKEN;   // RS-SEC v1.01 (F2): the WS layer reads this to decide upgrade mutation rights
+    /* RS-SEC v1.03 (G1a): retro-scrub — anything already buffered before this
+       point (an env/file token echoed by an earlier block) gets redacted now. */
+    try {
+      var ring0 = global.__rsLogBuf, sc0 = global.__rsLogScrub;
+      if (Array.isArray(ring0) && typeof sc0 === 'function') for (var ri = 0; ri < ring0.length; ri++) ring0[ri].m = sc0(String(ring0[ri].m || ''));
+    } catch (e) {}
     function authCfg() { return (CONFIG && CONFIG.auth) || {}; }
     function sentToken(req, u) {
       var h = req.headers && req.headers['x-rs-token'];
@@ -5528,6 +5747,11 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     /* RS-SEC v1.01 (F4): the tag exemption is now an EXACT shape, not a prefix.
        `/api/tag/` as a prefix exempted anything that merely started with it. */
     var TAG_RE = /^\/api\/tag\/[A-Za-z0-9_:-]+$/;
+    /* RS-SEC v1.03 (G1b): reads that need the token even though they change
+       nothing. /api/ha/entities is your Home Assistant inventory;
+       /api/log is the 500-line console ring — filesystem paths, entity ids,
+       mode names, and (before G1a) the first-run admin token itself. */
+    var GATED_GET = { '/api/ha/entities': 1, '/api/log': 1 };
     function allowed(req) {
       var cfg = authCfg();
       if (cfg.enabled === false) return true;
@@ -5539,7 +5763,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       var isTagPath = p.indexOf('/api/tag/') === 0;
       if (isTagPath) return (tagOpen && TAG_RE.test(p)) || tokenOk(req, u);
       if (m === 'GET' || m === 'HEAD') {
-        if (p === '/api/ha/entities') return tokenOk(req, u);            // the one always-gated read
+        if (GATED_GET[p]) return tokenOk(req, u);                        // the always-gated reads
         for (var i = 0; i < MUTATING_GET.length; i++) if (MUTATING_GET[i].test(p)) return tokenOk(req, u);
         return true;
       }
@@ -5561,6 +5785,7 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       + (authCfg().enabled === false ? ' [DISABLED — config auth.enabled:false]' : '')
       + (authCfg().tagOpen === true ? ' [tag route OPEN — auth.tagOpen:true]' : ' [tag route closed]')
       + ' · mutating GETs gated: ' + MUTATING_GET.length
+      + ' · gated reads: ' + Object.keys(GATED_GET).join(', ')          // RS-SEC v1.03 (G1b)
       + ' · chain: ' + chain.length + ' listener(s) wrapped');
   } catch (e) { try { console.error('[auth] init failed:', e && e.message); } catch (x) {} }
 })();

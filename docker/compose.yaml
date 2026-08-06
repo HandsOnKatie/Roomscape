@@ -1,4 +1,4 @@
-# Roomscape Conductor — docker compose (public v1.01)
+# Roomscape Conductor — docker compose (public v1.03)
 #
 # Run from this folder:
 #   cp ../.env.example ../.env    # then fill in HA_URL / HA_TOKEN (and MA_* if used)
@@ -33,16 +33,26 @@ services:
       # read-only: editing them on the host is the deploy; content/web files
       # are picked up instantly, conductor.js after `docker restart roomscape`.
       - ..:/app/web:ro
-      # Runtime state — WRITABLE, and NOT under /app/web: state.json,
-      # profiles.json, admin-token + backups live here.
+      # Runtime state — WRITABLE, and NOT under /app/web. v1.03: this is now
+      # THE writable state root. state.json, profiles.json, admin-token,
+      # _backups/, .thumbs/ AND every JSON store the Conductor writes
+      # (scores, rules-data, playlists, social-effects, viz, mediafx,
+      # modeposters, variants, scenedims) live here. Before v1.03 those stores
+      # resolved either under /app/web (read-only -> silent EROFS) or under
+      # /app inside the container (writable, but wiped on recreate).
       - ../data:/app/data
-      # Media library — writable so the thumbnail cache (.thumbs/) can build.
+      # Media library — writable so uploads land somewhere.
       - ../media:/app/web/media
       # Theme packs — WRITABLE so "Import theme…" in the app can install a pack
       # (v1.01: was :ro, which made import fail with EROFS).
       - ../themes:/app/web/themes
-      # Sound library (intro cues, sfx) — read-only.
-      - ../sounds:/app/web/sounds:ro
+      # Sound library (intro cues, sfx). v1.03: WRITABLE — the TTS cache writes
+      # generated speech to sounds/voice/, so :ro silently broke every party-game
+      # announcement and every 🗣 Announce.
+      - ../sounds:/app/web/sounds
+      # Score-card portraits (POST /api/people/photo) are written here and served
+      # back from /people/ — needs its own writable mount, /app/web is :ro.
+      - ../people:/app/web/people
       # RS-SEC v1.01 (F1b): belt-and-braces — the host .env sits inside the
       # directory mounted as the web root, so mask it with an empty file. The
       # real secrets still reach the process through env_file above. (The

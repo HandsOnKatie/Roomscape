@@ -1,6 +1,6 @@
 # Security model — read before deploying
 
-**Version 1.01**
+**Version 1.03**
 
 ## What Roomscape is, security-wise
 
@@ -58,8 +58,20 @@ rotate it any time under **⚙ Settings → System → 🔑 Admin token…**.
   JavaScript and no CORS involved. These require the token whatever the verb:
   `/api/game/*`, `/api/mode/*`, `/api/panic`, `/api/kid`, `/api/rescan`,
   `/api/warmthumbs`.
-- `GET /api/ha/entities` — the **one gated read**: it lists your Home Assistant
-  entity inventory (for the setup wizard), which is worth a token even read-only.
+- **The two gated reads.** Everything else answering GET stays open (see below);
+  these two need the token even though they change nothing:
+  - `GET /api/ha/entities` — your Home Assistant entity inventory (used by the
+    setup wizard).
+  - `GET /api/log` — the last 500 console lines. Since v1.03. This buffer holds
+    filesystem paths, Home Assistant entity ids, mode names and any error text
+    the Conductor printed. Before v1.03 it was an **open** GET *and* the
+    first-run admin token was printed through `console.log`, which the buffer
+    wraps — so on a fresh install `GET /api/log?q=admin` handed the admin token
+    to any unauthenticated device on the LAN, defeating the gate entirely. The
+    token is now printed straight to stdout (still visible in the boot log and
+    in `docker logs roomscape`, which is where you're meant to read it) and
+    never enters the buffer; every buffered line is additionally scrubbed of the
+    live `ADMIN_TOKEN`, `HA_TOKEN` and `MA_TOKEN` values.
 - **`/api/tag/*` — gated by default since v1.01.** NFC tag taps arrive via Home
   Assistant's `rest_command`, so add the header there (see
   [docs/HA-SETUP.md](docs/HA-SETUP.md)):
@@ -92,15 +104,65 @@ rotate it any time under **⚙ Settings → System → 🔑 Admin token…**.
 
 ### What stays open (LAN conveniences, each deliberate)
 
-- **All other GETs** — state, layout, scenes, media, thumbnails, health. Anyone
-  on the LAN can *watch*; they can't *change* anything.
+- **All other GETs** — state, layout, profiles, scenes, media, thumbnails,
+  theme-pack export, health. Anyone on the LAN can *watch*; they can't *change*
+  anything. See "Known open surfaces" below for exactly what that exposes.
 - **WebSocket connections themselves** (frame kiosks): upgrades need no token to
   *receive* state. Gating that would break every wall TV on each restart for no
   mutation-protection gain — and pushing state is separately gated, above.
 - **There is no localhost exemption.** Behind Docker port-mapping the client
   address the server sees is the Docker bridge, not the real caller — a
   localhost bypass would quietly become an everyone bypass. Local scripts should
-  use the token like everything else.
+  use the token like everything else. The Conductor's own internal loopback
+  calls (the party-game narrator, the automatic score post, the Time Machine
+  restore) present the admin token like any other client — before v1.03 they did
+  not, and were silently 401ing with the gate on.
+
+### Known open surfaces — read these, they are deliberate but they are real
+
+Four things are worth stating plainly rather than leaving for someone to
+discover. None of them are bugs; all of them are consequences of "trusted LAN,
+one shared token".
+
+1. **`POST /api/config {"auth":{"enabled":false}}` turns the whole gate off,
+   permanently.** Anyone holding the admin token can disable authentication for
+   the entire install with one request — `CONFIG.auth` is read live per request,
+   so it takes effect immediately and survives restarts (it is written to
+   `config.json`). This is by design: it is the documented upgrade path for an
+   existing install that cannot be re-tokenised in one go. But it means **the
+   token is not just "permission to change things", it is permission to remove
+   the lock**. Treat it accordingly, and check `config.json` if the boot banner
+   ever says `[DISABLED — config auth.enabled:false]`.
+
+2. **`GET /api/theme/export/<pack>` is an ungated bulk download.** It is a GET,
+   so it is on the open read surface: anyone on the LAN can pull any installed
+   theme pack — every image, video and sound in it, plus the mode definition —
+   as a single zip, with no token. That is intentional (packs are meant to be
+   shared) but it does mean a theme pack is *not* a place to keep anything you
+   would not hand to the whole network.
+
+3. **The open profile GETs are the known read-surface.** `GET /api/profiles`
+   redacts exactly one thing: the Music Assistant token. Everything else is
+   served to any unauthenticated LAN client — your **Home Assistant entity ids**
+   (lights, TVs, scenes, weather and sun entities), your **room layout** (frame
+   ids, walls, roles), your **schedule** (what happens in your house at what
+   time, on which days), your **NFC tag map**, and every mode definition with
+   its media paths. `GET /api/state`, `/api/layout` and `/api/rooms` are open on
+   the same basis. If you would not put that list on a whiteboard in the room,
+   Roomscape is not the tool for that network.
+
+4. **`deploy/edge.js` has no authentication at all** and answers every request
+   with `Access-Control-Allow-Origin: *`. It runs on the display PCs (default
+   port 8093) to mirror media and manage the kiosk. `POST /edge/screens`
+   **rewrites `~/.xinitrc` and restarts the kiosk session** — unauthenticated
+   remote code execution in every meaningful sense, reachable from any device
+   on the same LAN segment and from any web page open on that LAN. It exists
+   because it is meant to sit on a dedicated, physically-controlled display
+   network. If you run it:
+   - keep it on a trusted LAN segment (ideally a separate VLAN with only the
+     Conductor able to reach it),
+   - bind it to the kiosk's LAN interface rather than `0.0.0.0` if you can,
+   - and never, under any circumstances, expose port 8093 beyond that segment.
 
 ## CORS
 
@@ -122,6 +184,10 @@ It serves an explicit allow-list: the app and frame pages
 `scores.html`), plus files under `app/` and `people/` with a safe extension.
 Media, sounds, decks, photos, overlays and thumbnails have their own dedicated,
 containment-checked routes.
+
+Since v1.03 the app directory holds nothing writable at all: `DATA_DIR` is the
+single writable state root (every JSON store, `_backups/`, the thumbnail cache
+and the admin token), and Docker mounts it at `/app/data`, outside the web root.
 
 Everything else under the app directory — `.env`, `config.json`,
 `profiles.json`, `data/`, `_backups/`, `docs/`, `scripts/`, `docker/`,
