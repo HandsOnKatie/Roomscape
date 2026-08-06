@@ -1,9 +1,10 @@
 # Ocean Depths — media licences
 
-No media files ship in this pack yet (format example only — see prompts.md).
-
-When files are added, each gets a line here:
+One placeholder file ships in this pack (the rest is "prompts, not pixels" — see
+prompts.md; the loader reports the absent files under `missing` in /api/themes).
 
 | File | Source | Licence |
 |---|---|---|
-| scenes/depths_pano.mp4 | (own generation) | CC0 |
+| scenes/depths_pano.png | generated gradient placeholder (own work, Roomscape project) | CC0 |
+| effects/bubbles.mp4 | not shipped — generate your own (prompts.md) | — |
+| sounds/underwater_loop.mp3 | not shipped — source a CC0 loop (prompts.md) | — |

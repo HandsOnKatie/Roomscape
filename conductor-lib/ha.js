@@ -20,7 +20,11 @@ module.exports = function (ctx) {
   const HA_URL = ctx.HA_URL, HA_TOKEN = ctx.HA_TOKEN, DEFAULT_SETTINGS = ctx.DEFAULT_SETTINGS;
 
   function haOn() { return !!(HA_URL && HA_TOKEN); }
-  function haCfg() { const h = ctx.settings().ha || {}; return { tvs: h.tvs || {}, lights: h.lights || [], zones: h.lightZones || DEFAULT_SETTINGS.ha.lightZones, lightScenes: Object.assign({}, DEFAULT_SETTINGS.ha.lightScenes, h.lightScenes || {}) }; }
+  /* v1.1 (RS-THEMES v1): theme packs may register in-memory light scenes
+     ('theme:<pack>' payloads) — the RS-THEMES block injects the getter into ctx
+     AFTER construction, so guard for it and read at call time. They merge on
+     top of defaults + user scenes and are never persisted. */
+  function haCfg() { const h = ctx.settings().ha || {}; return { tvs: h.tvs || {}, lights: h.lights || [], zones: h.lightZones || DEFAULT_SETTINGS.ha.lightZones, lightScenes: Object.assign({}, DEFAULT_SETTINGS.ha.lightScenes, h.lightScenes || {}, (typeof ctx.themeLightScenes === 'function' ? ctx.themeLightScenes() : {})) }; }
 
   function haFetch(method, apiPath, body, cb) {
     cb = cb || function () {};

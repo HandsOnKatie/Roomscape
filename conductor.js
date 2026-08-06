@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v4.44 (community release v0.21)
+   Roomscape — Conductor backend  v4.54 (community release v0.31)
+   v4.54 (Phase 3a): RS-THEMES v1 — theme-pack loader. THEMES_DIR (env or
+          APP_DIR/themes) is scanned at boot + /api/rescan; each pack folder's
+          theme.json contributes IN-MEMORY modes under "<pack>.<modeId>" (dot
+          namespace — never persisted to profiles.json). Pack media serves via
+          /media/__theme__/<pack>/<rel> (containment-checked inside THEMES_DIR);
+          missing pack files become __missing__/ refs that 404 (placeholder
+          hook for the app). GET /api/themes · POST /api/themes/rescan.
    v4.44 (Phase 2c): layout ROLES (primary/centers/corners/sweepOrder) always
           derived when config doesn't set them + roleFrames() helper; TTS/cue-card/
           charades/rules-sound frame defaults + sweep order flow from roles instead
@@ -35,6 +42,7 @@ const LIB_DIR = fs.existsSync(path.join(__dirname, 'conductor-lib'))
   : path.join(process.env.APP_DIR || path.join(__dirname, 'web'), 'conductor-lib');
 const MEDIA_DIR = process.env.MEDIA_DIR || path.join(APP_DIR, 'Images & Videos');
 const OVERLAY_DIR = process.env.OVERLAY_DIR || path.join(APP_DIR, 'overlays');
+const THEMES_DIR = process.env.THEMES_DIR || path.join(APP_DIR, 'themes');   // RS-THEMES v1: community theme packs (one folder = one pack)
 const BACKUP_DIR = path.join(APP_DIR, '_backups');
 const THUMB_DIR = path.join(APP_DIR, '.thumbs');
 let thumbLib = null, thumbKind = 'none';                    // optional: npm i sharp  (or jimp)
@@ -345,7 +353,11 @@ function resolveFrameImages(s) {                      // rs-playlists v3 — exp
 }
 function resolveOverlays(s) {
   const prof = effProfile(s.game) || {}, ov = prof.overlays || [];
-  s.overlayImages = (s.frames || []).map(function (kind, i) { return ov[i] ? '/overlays/' + encodeURIComponent(ov[i]) : null; });
+  s.overlayImages = (s.frames || []).map(function (kind, i) {
+    var v = ov[i]; if (!v) return null;
+    if (v.indexOf('__theme__/') === 0 || v.indexOf('__missing__/') === 0) return '/media/' + encodeURIComponent(v);   // RS-THEMES v1: pack overlays serve from THEMES_DIR via /media
+    return '/overlays/' + encodeURIComponent(v);
+  });
   /* v1.91 overlay fit — per-frame: stretch (default) | cover | contain | width | height */
   const ofit = prof.ovlFit || [];
   s.overlayFits = (s.frames || []).map(function (kind, i) { return ofit[i] || 'stretch'; });
@@ -600,7 +612,7 @@ const HA_DOMAINS = { media_player: 1, light: 1, scene: 1, remote: 1, switch: 1 }
    deliberately NOT extracted), hence const. */
 const ctx = {
   // config values (stable consts)
-  MEDIA_DIR, OVERLAY_DIR, PHOTOS_DIR, THUMB_DIR,
+  MEDIA_DIR, OVERLAY_DIR, PHOTOS_DIR, THUMB_DIR, THEMES_DIR,   // RS-THEMES v1: media.js themeSafe containment root
   IMG_RE, VID_RE, MEDIA_RE, OVL_RE,
   WS_GUID, HA_URL, HA_TOKEN, DEFAULT_SETTINGS,
   // stable references
@@ -615,7 +627,7 @@ const ctx = {
   // core callbacks — routed through ctx at call time so later patches to core apply
   handleClientMessage: (client, text) => handleClientMessage(client, text)
 };
-const { MIME, serveFile, mediaSafe, photoSafe, listPhotos, buildManifest, manifestDirty, buildManifestCached, thumbOut, genThumb, warmThumbs } = require(path.join(LIB_DIR, 'media.js'))(ctx);
+const { MIME, serveFile, mediaSafe, themeSafe, photoSafe, listPhotos, buildManifest, manifestDirty, buildManifestCached, thumbOut, genThumb, warmThumbs } = require(path.join(LIB_DIR, 'media.js'))(ctx);   // RS-THEMES v1: + themeSafe
 const { wsAccept, encodeFrame, wsSend, handleUpgrade, onWsData, WS_MAX_BUF } = require(path.join(LIB_DIR, 'ws.js'))(ctx);
 const { haOn, haCfg, haFetch, haCall } = require(path.join(LIB_DIR, 'ha.js'))(ctx);
 const { maCall, maItems, maImage } = require(path.join(LIB_DIR, 'music.js'))(ctx);
@@ -927,7 +939,20 @@ function coreHandler(req, res) {
   const u = new URL(req.url, 'http://localhost'); const p = u.pathname;
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); res.end(); return; }
 
-  if (p.startsWith('/media/')) { const abs = mediaSafe(decodeURIComponent(p.slice(7))); if (abs) return serveFile(res, abs, true); res.writeHead(404); return res.end('bad media path'); }
+  if (p.startsWith('/media/')) {
+    const relM = decodeURIComponent(p.slice(7));
+    /* RS-THEMES v1: pack media rides /media under the __theme__/ pseudo-rel and
+       resolves inside THEMES_DIR (themeSafe containment, same pattern as
+       mediaSafe). __missing__/ refs (pack declared a file it doesn't ship) are
+       an explicit 404 so the app can placeholder them. */
+    if (relM.indexOf('__missing__/') === 0) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('theme media missing'); }
+    if (relM.indexOf('__theme__/') === 0) {
+      const absT = themeSafe(relM.slice(10));
+      if (absT) return serveFile(res, absT, true);
+      res.writeHead(400, { 'Content-Type': 'text/plain' }); return res.end('bad theme path');
+    }
+    const abs = mediaSafe(relM); if (abs) return serveFile(res, abs, true); res.writeHead(404); return res.end('bad media path');
+  }
   if (p.startsWith('/overlays/')) { const fn = path.basename(decodeURIComponent(p.slice(10))); return serveFile(res, path.join(OVERLAY_DIR, fn), true); }
   if (p.startsWith('/decks/')) {    // v2.0 cue-card images — traversal-guarded inside decks/
     const rel = p.slice(7).split('/').map((s2) => decodeURIComponent(s2)).join('/');
@@ -1081,6 +1106,13 @@ function coreHandler(req, res) {
       // missing just dining could slip through. Re-seed it. (Phase 2c: AT_REST may
       // point at another profile id, but profiles.dining stays the safety net.)
       if (!profiles.dining) profiles.dining = Object.assign({}, DEFAULT_PROFILES.dining);
+      /* RS-THEMES v1: theme modes are IN-MEMORY ONLY. A client payload replaced the
+         whole profiles map (and settings) — it may carry stale expanded copies of
+         theme modes or omit them entirely. Re-expand from the packs on disk so the
+         in-memory map is fresh either way. The disk write below never sees them:
+         the RS-THEMES fs.writeFileSync wrap strips dot-namespaced ids (and _theme
+         Play sections) from every profiles.json write. */
+      if (typeof global.__rsThemesRemerge === 'function') { try { global.__rsThemesRemerge(); } catch (e) {} }
       // v2.52: report a failed disk write honestly — the client used to see
       // "Saved" while profiles.json still held the old content.
       let werr = null;
@@ -1387,7 +1419,7 @@ resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chrom
 setTimeout(directorOnModeChange, 2000);   // v1.2: start the current mode's audio director after boot
 server.listen(PORT, () => {
   console.log('====================================================');
-  console.log('  Roomscape Conductor  v4.34 (community v0.20)');
+  console.log('  Roomscape Conductor  v4.54 (community v0.31)');
   console.log('  modules : ' + LIB_MODULES.join(', ') + '  (conductor-lib @ ' + LIB_DIR + ')');
   console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — app.html missing, serving control.html') + ')');
   console.log('  app   : ' + APP_DIR);
@@ -1418,9 +1450,16 @@ function modeMusicFollow() {
   maCall('music/playlists/library_items', { limit: 500 }, (e, r) => {
     if (e) return;
     const items = maItems(r) || [];
-    const pl = items.find((x) => x && x.name === label)
+    let pl = items.find((x) => x && x.name === label)
             || items.find((x) => x && (x.name || '').toLowerCase() === label.toLowerCase());
-    if (!pl) { logDiary('music', 'mode music: no MA playlist named "' + label + '"'); return; }
+    /* RS-THEMES v1: theme packs carry a music QUERY, not an exact playlist name.
+       Exact match failed -> case-insensitive substring match (every query term
+       present in the playlist name); still nothing -> log + skip, no error. */
+    if (!pl) {
+      const terms = label.toLowerCase().split(/\s+/).filter(Boolean);
+      if (terms.length) pl = items.find((x) => { const n = ((x && x.name) || '').toLowerCase(); return terms.every((t) => n.indexOf(t) >= 0); });
+    }
+    if (!pl) { logDiary('music', 'mode music: no MA playlist matching "' + label + '"'); return; }
   maCall('player_queues/shuffle', { queue_id: mu.player, shuffle_enabled: true }, function () {}); // rs-music-shuffle v1
     maCall('player_queues/play_media', { queue_id: mu.player, media: pl.uri, option: 'replace' }, (e2) => {
       if (e2) return;
@@ -2146,6 +2185,9 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
         if (name.indexOf('..') >= 0 || !/^[\w\- ]+(\/[\w\- .()]+)?\.(jpe?g|png|webp|gif|mp4|txt|json|pdf|md)$/i.test(name)) {
           return send(400, { ok: false, error: 'bad name' });
         }
+        // RS-THEMES v1: __theme__/__missing__ are reserved /media pseudo-rel prefixes —
+        // an upload under them would land in MEDIA_DIR but serve from THEMES_DIR (unreachable)
+        if (name.indexOf('__theme__') === 0 || name.indexOf('__missing__') === 0) return send(400, { ok: false, error: 'reserved name' });
         const abs = mediaSafe(name);
         if (!abs) return send(400, { ok: false, error: 'outside media dir' });
         try {
@@ -3221,7 +3263,10 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     snapshot('boot');
     setInterval(function () { snapshot('hourly'); }, 3600000);
 
-    function realIds(map) { return Object.keys(map || {}).filter(function (k) { return k.charAt(0) !== '_'; }); }
+    /* RS-THEMES v1: dot-namespaced ids are in-memory theme modes — never on disk,
+       so they must not count as "existing modes" or as additions in the guard's
+       missing/idchange math (a naive count would snapshot on every save). */
+    function realIds(map) { return Object.keys(map || {}).filter(function (k) { return k.charAt(0) !== '_' && k.indexOf('.') < 0; }); }
     function diskMap() {
       try { var j = JSON.parse(fs.readFileSync(PFILE, 'utf8')); return j.profiles || j; } catch (e) { return null; }
     }
@@ -4892,4 +4937,137 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
     });
     console.log('[audio] RS-AUDIO-STOP v1.0 ready \u2014 POST /api/audio/stop');
   } catch (e) { try { console.error('[audio] stop init failed:', e && e.message); } catch (x) {} }
+})();
+
+/* ================= ROOMSCAPE THEME PACKS (RS-THEMES v1, 2026-08-06) =================
+   Phase 3a of the community release — the theme-pack loader (docs/THEMES.md).
+   THEMES_DIR (env THEMES_DIR || APP_DIR/themes) is scanned one level deep at
+   boot and on every media rescan (/api/rescan calls scanMedia — wrapped below);
+   each folder with a valid format-1 theme.json contributes its modes into the
+   in-memory `profiles` map under "<pack>.<modeId>" (DOT namespace — dots never
+   appear in native profile ids, and they survive URL paths where encoded
+   slashes do not).
+   INVARIANTS:
+   - Theme modes are IN-MEMORY ONLY: the fs.writeFileSync wrap below strips
+     dot-namespaced ids (and _theme-flagged Play sections) from every
+     profiles.json write, and the pguard's realIds excludes them (core edit) so
+     saves neither persist, delete nor double-count them.
+   - Pack media is NEVER copied: refs are rewritten at expansion to
+     __theme__/<pack>/<rel> pseudo-rels which the /media route serves from
+     inside THEMES_DIR (themeSafe containment, conductor-lib/media.js);
+     declared-but-absent files become __missing__/<pack>/<rel> refs → 404
+     (the app renders a labelled placeholder, Phase 3c).
+   - Pack light.scene payloads register as in-memory lightScenes named
+     'theme:<pack>' via the ctx.themeLightScenes getter (merged at call time
+     in conductor-lib/ha.js haCfg — every HA consumer sees them).
+   Endpoints (RS-ROUTE-DISPATCH router): GET /api/themes · POST /api/themes/rescan.
+   Pure scan/validate/expand logic lives in conductor-lib/themes.js. */
+;(function () {
+  try {
+    var themesApi = require(path.join(LIB_DIR, 'themes.js'))(ctx);
+    var THEME_STATE = { packs: [] };          // last scan report (served by /api/themes)
+    var themeLightScenes = {};                // 'theme:<pack>' -> light.turn_on payload
+    ctx.themeLightScenes = function () { return themeLightScenes; };   // read by ha.js haCfg at call time
+
+    function rescanThemes() {
+      // clear previous registrations (every dot-namespaced id is ours by construction)
+      Object.keys(profiles).forEach(function (k) { if (k.indexOf('.') >= 0) delete profiles[k]; });
+      if (settings && Array.isArray(settings.playSections))
+        settings.playSections = settings.playSections.filter(function (s) { return !(s && s._theme); });
+      Object.keys(themeLightScenes).forEach(function (k) { delete themeLightScenes[k]; });
+
+      var res = themesApi.scanThemes(THEMES_DIR);
+      var report = [], nModes = 0;
+      (res.packs || []).forEach(function (pk) {
+        var entry = { id: pk.id, name: pk.name, author: pk.author, version: pk.version,
+                      kidSafe: pk.kidSafe, section: pk.section || null,
+                      cover: pk.cover ? ('/media/' + encodeURIComponent(pk.cover)) : null,
+                      modes: [], missing: [], errors: pk.errors.slice(), warnings: [] };
+        Object.keys(pk.modes).forEach(function (mid) {
+          var exp = themesApi.expandMode(pk, mid, pk.modes[mid], LAYOUT, settings);
+          var fullId = pk.id + '.' + mid;
+          if (exp.lightScenePayload) {
+            var scName = 'theme:' + pk.id;    // spec name; a second DIFFERING payload in the same pack gets the full mode id
+            if (themeLightScenes[scName] && JSON.stringify(themeLightScenes[scName]) !== JSON.stringify(exp.lightScenePayload)) scName = 'theme:' + fullId;
+            themeLightScenes[scName] = exp.lightScenePayload;
+            exp.profile.light = scName;
+          }
+          profiles[fullId] = exp.profile;
+          nModes++;
+          entry.modes.push(fullId);
+          exp.missing.forEach(function (r) { if (entry.missing.indexOf(r) < 0) entry.missing.push(r); });
+          exp.warnings.forEach(function (w) { entry.warnings.push(w); console.log('[themes] ' + pk.id + ': ' + w); });
+        });
+        if (entry.modes.length && pk.section) {
+          settings.playSections = Array.isArray(settings.playSections) ? settings.playSections : [];
+          if (!settings.playSections.some(function (s) { return s && s.id === pk.section.id; })) {
+            settings.playSections.push({ id: pk.section.id, name: pk.section.name, icon: pk.section.icon, _theme: true });
+            console.log('[themes] Play section "' + pk.section.name + '" (' + pk.section.id + ') added in-memory for pack ' + pk.id);
+          }
+        }
+        report.push(entry);
+      });
+      THEME_STATE.packs = report;
+      try { state._imgSig = null; } catch (e) {}   // a live theme mode re-resolves scenes on the next bump
+      console.log('[themes] scan: ' + report.length + ' pack(s), ' + nModes + ' mode(s) in ' + THEMES_DIR
+        + (report.length ? ' — ' + report.map(function (p2) {
+            return p2.id + (p2.errors.length ? ' (ERRORS: ' + p2.errors.join('; ') + ')'
+                                             : ' (' + p2.modes.length + ' mode(s)' + (p2.missing.length ? ', ' + p2.missing.length + ' missing file(s)' : '') + ')');
+          }).join(', ') : ''));
+      return report;
+    }
+    global.__rsThemesRemerge = rescanThemes;   // POST /api/profiles re-expands after replacing the map (core edit)
+
+    /* ---- scene passthrough: theme frameScenes hold the pseudo-rel DIRECTLY, not a
+       landIndex scene key — pickScene (current binding = the RS-SCENE-DIMS quality-
+       aware wrapper) must emit the /media URL verbatim for them, matching the
+       frontend's whole-rel encodeURIComponent convention. ---- */
+    var _thPick = pickScene;
+    pickScene = function (sceneKey) {
+      if (typeof sceneKey === 'string' && (sceneKey.indexOf('__theme__/') === 0 || sceneKey.indexOf('__missing__/') === 0))
+        return '/media/' + encodeURIComponent(sceneKey);
+      return _thPick(sceneKey);
+    };
+
+    /* ---- persistence firewall: profiles.json must NEVER carry theme modes or
+       _theme sections. One choke point covers every write site (POST /api/profiles,
+       the /api/volume debounce, timer presets, schedule). Chains on the RS-HARDEN
+       wrap: we strip first, harden then wipe-checks and writes atomically. ---- */
+    var _thWrite = fs.writeFileSync.bind(fs);
+    fs.writeFileSync = function (file, data, opts) {
+      try {
+        if (typeof file === 'string' && typeof data === 'string'
+            && path.basename(file) === path.basename(PROFILES_FILE) && file.indexOf('_backups') < 0) {
+          var j = JSON.parse(data);
+          if (j && j.profiles && typeof j.profiles === 'object') {
+            var changed = false;
+            Object.keys(j.profiles).forEach(function (k) { if (k.indexOf('.') >= 0) { delete j.profiles[k]; changed = true; } });
+            if (j.settings && Array.isArray(j.settings.playSections)) {
+              var b4 = j.settings.playSections.length;
+              j.settings.playSections = j.settings.playSections.filter(function (s) { return !(s && s._theme); });
+              if (j.settings.playSections.length !== b4) changed = true;
+            }
+            if (changed) data = JSON.stringify(j, null, 2);
+          }
+        }
+      } catch (e) {}
+      return _thWrite(file, data, opts);
+    };
+
+    /* ---- rescan wiring: /api/rescan (and /api/upload's async path aside) calls
+       scanMedia — wrap the CURRENT binding (deepscan + dims wraps) so a library
+       rescan re-reads the packs too. Boot runs rescanThemes() directly below. ---- */
+    var _thScan = scanMedia;
+    scanMedia = function () { _thScan(); try { rescanThemes(); } catch (e) { console.log('[themes] rescan failed:', e && e.message); } };
+
+    /* ---- endpoints (RS-ROUTE-DISPATCH router) ---- */
+    var R = global.__rsRouter;
+    if (R) {
+      R.add('GET', '/api/themes', function (req, res, u, real) { real.json(200, { ok: true, dir: THEMES_DIR, themes: THEME_STATE.packs }); });
+      R.add('POST', '/api/themes/rescan', function (req, res, u, real) { req.resume(); rescanThemes(); real.json(200, { ok: true, dir: THEMES_DIR, themes: THEME_STATE.packs }); });
+    } else console.log('[themes] router missing — /api/themes endpoints skipped');
+
+    rescanThemes();   // boot scan (profiles + settings are loaded by now)
+    console.log('[themes] RS-THEMES v1 ready — GET /api/themes · POST /api/themes/rescan (dir: ' + THEMES_DIR + ')');
+  } catch (e) { try { console.error('[themes] init failed:', e && e.message); } catch (x) {} }
 })();

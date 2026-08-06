@@ -25,6 +25,15 @@ module.exports = function (ctx) {
     const abs = path.resolve(MEDIA_DIR, rel || '');
     return abs.startsWith(path.resolve(MEDIA_DIR) + path.sep) ? abs : null;
   }
+  /* v1.1 (RS-THEMES v1): resolve a theme-pack path (the part after the
+     __theme__/ pseudo-rel prefix) strictly inside THEMES_DIR — same
+     containment pattern as mediaSafe/photoSafe. */
+  function themeSafe(rel) {
+    const THEMES_DIR = ctx.THEMES_DIR;
+    if (!THEMES_DIR) return null;
+    const abs = path.resolve(THEMES_DIR, rel || '');
+    return abs.startsWith(path.resolve(THEMES_DIR) + path.sep) ? abs : null;
+  }
 
   /* -------------------- THUMBNAILS (optional sharp/jimp, disk-cached) -------------------- */
   function thumbOut(tag, w, fn) { try { fs.mkdirSync(THUMB_DIR, { recursive: true }); } catch (e) {} return path.join(THUMB_DIR, (tag === 'p' ? 'p2' : tag) + '_' + w + '_' + fn.replace(/[^a-z0-9_.-]/gi, '_') + (tag === 'p' ? '.jpg' : '.png')); }   // v2.33: p2 = EXIF-oriented generation   // photos -> jpeg (much smaller)
@@ -167,5 +176,5 @@ module.exports = function (ctx) {
     return _manifestBuilding;
   }
 
-  return { MIME, serveFile, mediaSafe, photoSafe, listPhotos, buildManifest, manifestDirty, buildManifestCached, thumbOut, genThumb, warmThumbs };
+  return { MIME, serveFile, mediaSafe, themeSafe, photoSafe, listPhotos, buildManifest, manifestDirty, buildManifestCached, thumbOut, genThumb, warmThumbs };
 };

@@ -1,9 +1,14 @@
 # Theme packs — format specification
 
-**Format version: 1** · **Doc version 0.10**
-Status: format is FINAL for v1; the loader/importer that consumes it is in progress (see ROADMAP.md). Feedback welcome before it freezes.
+**Format version: 1** · **Doc version 0.20**
+Status: format is FINAL for v1, and the loader that consumes it is LIVE
+(conductor RS-THEMES v1): packs in `themes/` are scanned at boot and on rescan
+(`POST /api/themes/rescan`, or any library Rescan), and `GET /api/themes` reports
+every pack with its modes, missing files and validation errors.
 
 One folder = one theme. Drop it in `themes/`, rescan, and it appears in Play.
+Folder names must be lowercase `a-z`, `0-9` and `-` only (they become the id
+namespace); mode ids may use letters, digits, `_` and `-` — never dots.
 
 ```
 themes/haunted-manor/
@@ -24,8 +29,11 @@ themes/haunted-manor/
 2. **No device identifiers.** A pack may never contain Home Assistant entity ids,
    IPs, hostnames, or MAC addresses. Lighting is expressed *semantically* (below)
    and resolved against the host's own configuration.
-3. **Namespaced ids.** A mode's full id is `<pack-folder>/<mode-id>` — collisions
-   between packs are impossible.
+3. **Namespaced ids.** A mode's full id is `<pack-folder>.<mode-id>` (a DOT, e.g.
+   `ocean-depths.main`) — collisions between packs are impossible. The separator
+   is a dot, not a slash, because mode ids travel inside URL paths
+   (`/api/mode/<id>`, `/api/game/<id>`) and percent-encoded slashes are
+   unreliable across proxies and servers.
 4. **Music is a query, not a playlist.** The pack suggests; the host's Music
    Assistant resolves; the user confirms once and their choice is cached locally.
 5. **Media is optional.** A pack may ship `prompts.md` instead of (or alongside)
@@ -97,6 +105,12 @@ Notes:
   `playlist`, `score`, `map`, `clock`, `off`.
 - Everything except `name` and `wall` is optional. Start tiny; grow.
 - `requires.framesMin` lets the host warn before install rather than break after.
+- Loader behaviour (v1): pack media is served in place (never copied) from the
+  pack folder; a referenced file that doesn't exist keeps its mode but renders a
+  labelled placeholder, and `GET /api/themes` lists it under that pack's
+  `missing`. Unknown `light.zones` names are dropped (logged at boot) — the
+  host's own zone map wins. A bad `theme.json` lists the pack with `errors` and
+  registers none of its modes.
 
 ## Making the art — "prompts, not pixels"
 

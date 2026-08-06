@@ -14,7 +14,7 @@
       "name": "Ocean Depths",
       "accent": "#1b6ca8",
       "ambience": "Deep water calm",
-      "wall": { "kind": "pano", "scene": "scenes/depths_pano.mp4" },
+      "wall": { "kind": "pano", "scene": "scenes/depths_pano.png" },
       "effect": "effects/bubbles.mp4",
       "transition": { "style": "fade", "durationMs": 1600 },
       "light": {

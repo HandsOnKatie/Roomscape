@@ -1,6 +1,13 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.2 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.3 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.3 (Phase 3a, RS-THEMES v1): theme-pack loader — /api/themes lists the
+   shipped ocean-depths pack (mode 'ocean-depths.main', non-empty missing[]),
+   the expanded in-memory profile has layout-sized frames[] + __theme__/ scene
+   refs, pack media serves via /media/__theme__%2F..., a /api/profiles
+   round-trip neither persists nor deletes theme modes, and a traversal
+   attempt on the theme media route is rejected. Boot 1 now uses a scratch
+   PROFILES_FILE so the round-trip write never touches the repo store.
    v1.2 (Phase 2c): /api/layout must always carry derived roles + atRest; a
    second boot with a custom CONFIG_FILE (atRestMode + single wall of three)
    verifies config-driven at-rest + role derivation.
@@ -21,6 +28,7 @@ const child = spawn(process.execPath, [path.join(ROOT, 'conductor.js')], {
     PORT: String(PORT),
     APP_DIR: ROOT,
     STATE_FILE: path.join(tmp, 'state.json'),
+    PROFILES_FILE: path.join(tmp, 'profiles1.json'),   // v1.3: round-trip check WRITES profiles — scratch file, never the repo store
     MEDIA_DIR: path.join(tmp, 'media'),          // v1.1: upload check writes here, not the repo
     HA_URL: '', HA_TOKEN: '', MA_URL: '', MA_TOKEN: ''
   }),
@@ -117,6 +125,57 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
       let j = null; try { j = JSON.parse(r.body); } catch (e) {}
       check('GET ' + pth + ' ok:true (router)', r.code === 200 && !!(j && j.ok && (key in j)), 'code ' + r.code + ' ' + r.body.slice(0, 120));
     }
+
+    // ---- v1.3 (Phase 3a): RS-THEMES v1 — theme-pack loader ----
+    check('boot log shows theme scan summary', bootLog.indexOf('[themes] scan:') >= 0, 'no [themes] scan line in boot log');
+
+    const th = await get('/api/themes');
+    let tj = null; try { tj = JSON.parse(th.body); } catch (e) {}
+    const od = tj && tj.ok && Array.isArray(tj.themes) ? tj.themes.find(t => t && t.id === 'ocean-depths') : null;
+    check('/api/themes lists ocean-depths with mode ocean-depths.main',
+      !!(od && Array.isArray(od.modes) && od.modes.indexOf('ocean-depths.main') >= 0 && (!od.errors || !od.errors.length)),
+      th.body.slice(0, 300));
+    check('/api/themes reports the pack\'s absent sound in missing[]',
+      !!(od && Array.isArray(od.missing) && od.missing.length && od.missing.indexOf('sounds/underwater_loop.mp3') >= 0),
+      JSON.stringify(od && od.missing));
+
+    const prof2 = await get('/api/profiles');
+    let pj2 = null; try { pj2 = JSON.parse(prof2.body); } catch (e) {}
+    const tm = pj2 && pj2.profiles && pj2.profiles['ocean-depths.main'];
+    const nFrames = lj && lj.frames ? lj.frames.length : -1;
+    check('profiles[ocean-depths.main] expanded: frames[] sized to layout, frameScenes[0] is a __theme__/ ref',
+      !!(tm && Array.isArray(tm.frames) && tm.frames.length === nFrames
+         && Array.isArray(tm.frameScenes) && typeof tm.frameScenes[0] === 'string' && tm.frameScenes[0].indexOf('__theme__/') === 0),
+      JSON.stringify(tm && { frames: tm.frames, frameScenes: tm.frameScenes }).slice(0, 300));
+
+    // pack media serves through /media with the frontend's whole-rel encoding (pickScene convention)
+    const sceneUrl = '/media/' + encodeURIComponent('__theme__/ocean-depths/scenes/depths_pano.png');
+    const img = await get(sceneUrl);
+    check('theme scene serves via ' + sceneUrl, img.code === 200 && img.body.length > 100, 'code ' + img.code + ' len ' + img.body.length);
+
+    // round-trip: POST the served map straight back — theme modes must survive in memory but never reach disk
+    if (pj2 && pj2.profiles) {
+      const rt = await post('/api/profiles', { profiles: pj2.profiles, tagmap: pj2.tagmap || {}, settings: pj2.settings || {} });
+      const prof3 = await get('/api/profiles');
+      let pj3 = null; try { pj3 = JSON.parse(prof3.body); } catch (e) {}
+      check('POST /api/profiles round-trip keeps theme modes in memory (re-expanded, not deleted)',
+        rt.code === 200 && !!(pj3 && pj3.profiles && pj3.profiles['ocean-depths.main']),
+        'post ' + rt.code + ' ' + rt.body.slice(0, 160));
+      let disk = null; try { disk = JSON.parse(fs.readFileSync(path.join(tmp, 'profiles1.json'), 'utf8')); } catch (e) {}
+      const diskDots = disk && disk.profiles ? Object.keys(disk.profiles).filter(k => k.indexOf('.') >= 0) : ['unreadable'];
+      const diskThemeSecs = disk && disk.settings && Array.isArray(disk.settings.playSections)
+        ? disk.settings.playSections.filter(s => s && s._theme) : [];
+      check('theme modes + _theme sections NOT persisted to profiles.json',
+        diskDots.length === 0 && diskThemeSecs.length === 0,
+        'dot ids on disk: ' + JSON.stringify(diskDots) + ' theme sections: ' + diskThemeSecs.length);
+    } else check('round-trip prerequisites (profiles GET parsed)', false, prof2.body.slice(0, 160));
+
+    const trav = await get('/media/' + encodeURIComponent('__theme__/../profiles.json'));
+    check('theme media route rejects traversal', trav.code >= 400 && trav.code < 500, 'code ' + trav.code);
+
+    const rs = await post('/api/themes/rescan', {});
+    let rsj = null; try { rsj = JSON.parse(rs.body); } catch (e) {}
+    check('POST /api/themes/rescan re-reports the pack', rs.code === 200 && !!(rsj && rsj.ok && (rsj.themes || []).some(t => t && t.id === 'ocean-depths')), 'code ' + rs.code + ' ' + rs.body.slice(0, 160));
   }
   child.kill();
 
