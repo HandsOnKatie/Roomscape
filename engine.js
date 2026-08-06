@@ -52,54 +52,20 @@
     var s = palStops(colorVal); var m = palAt(s, 0.72); return 'rgb(' + m[0] + ',' + m[1] + ',' + m[2] + ')';
   }
 
+  /* Community release: the built-in registries ship with only the at-rest 'dining'
+     entry. Real modes come from the Conductor's profiles (see hydrateGames below);
+     these objects are the demo/offline fallback and keep their exported shapes. */
   var GAMES = {
     dining:   { name:'Dining Mode', glyph:'🖼', desc:'At rest', accent:'#c9a35e',
                 pano:'linear-gradient(160deg,#1c1e26,#0f1117)', light:'gallery',
-                ambience:'Quiet room', music:'—', frames:['pano','pano','pano','pano','pano','pano'] },
-    catan:    { name:'Catan', glyph:'⛵', desc:'Harbour', accent:'#5ec8c8',
-                pano:'linear-gradient(160deg,#2a6f8f,#7fb7c9 55%,#e6c98a)', light:'daylight',
-                ambience:'Waves & gulls', music:'Harbours of Catan', frames:['pano','pano','score','pano','pano','map'] },
-    dnd:      { name:'D&D', glyph:'⚔', desc:'Dungeon', accent:'#e0b04a',
-                pano:'linear-gradient(160deg,#1a130c,#3a2410 60%,#6b3d12)', light:'dungeon',
-                ambience:'Torches & drips', music:'Dungeon Depths', frames:['pano','portrait','clock','pano','pano','score'] },
-    pandemic: { name:'Pandemic', glyph:'🦠', desc:'Outbreak', accent:'#e0655f',
-                pano:'linear-gradient(160deg,#0e1a24,#123247 60%,#1e5066)', light:'clinical',
-                ambience:'Tension pulse', music:'Situation Room', frames:['map','map','clock','map','score','map'] },
-    wingspan: { name:'Wingspan', glyph:'🦅', desc:'Sanctuary', accent:'#73c990',
-                pano:'linear-gradient(160deg,#2a4d2e,#5d8c4a 55%,#e7d28a)', light:'dawn',
-                ambience:'Birdsong & brook', music:'Dawn Chorus', frames:['pano','pano','score','pano','pano','clock'] },
-    ttr:      { name:'Ticket to Ride', glyph:'🚂', desc:'Rails', accent:'#e0905a',
-                pano:'linear-gradient(160deg,#3a2a1c,#7a5a3a 55%,#d9b483)', light:'carriage',
-                ambience:'Train clatter', music:'All Aboard', frames:['pano','pano','map','pano','pano','score'] },
-    root:     { name:'Root', glyph:'🦊', desc:'Woodland', accent:'#e07a4a',
-                pano:'linear-gradient(160deg,#3a2410,#7a4a1e 50%,#c97a2e)', light:'forest',
-                ambience:'Woodland & motifs', music:'Faction Themes', frames:['pano','pano','score','pano','pano','portrait'] },
-    gloom:    { name:'Gloomhaven', glyph:'🗡', desc:'Crawl', accent:'#9d8cff',
-                pano:'linear-gradient(160deg,#14121c,#241e36 60%,#3a2f55)', light:'dungeon',
-                ambience:'Brooding strings', music:'Mercenary Gloom', frames:['pano','score','clock','pano','pano','map'] },
-    betrayal: { name:'Betrayal', glyph:'🏚', desc:'Haunt', accent:'#b46cc9',
-                pano:'linear-gradient(160deg,#160f14,#2a1622 60%,#46203a)', light:'moonlight',
-                ambience:'Creaks & whispers', music:'House on the Hill', frames:['portrait','pano','pano','pano','portrait','clock'] },
-    arkham:   { name:'Arkham Horror', glyph:'🐙', desc:'Dread', accent:'#73c9a0',
-                pano:'linear-gradient(160deg,#101c16,#173a2a 60%,#2a5544)', light:'gaslight',
-                ambience:'Drones & wind', music:'Mythos', frames:['pano','portrait','clock','pano','map','score'] },
-    carc:     { name:'Carcassonne', glyph:'🏰', desc:'Country', accent:'#e0c44a',
-                pano:'linear-gradient(160deg,#3a4a1c,#7a8c3a 55%,#e6d68a)', light:'daylight',
-                ambience:'Pastoral & bells', music:'Sunny Fields', frames:['pano','pano','score','pano','pano','map'] }
+                ambience:'Quiet room', music:'—', frames:['pano','pano','pano','pano','pano','pano'] }
   };
-  var GAME_ORDER = ['dining','catan','dnd','pandemic','wingspan','ttr','root','gloom','betrayal','arkham','carc'];
+  var GAME_ORDER = ['dining'];
 
   var MODES = {
-    dining:      { name:'Dining',        icon:'☕', sw:'#c9a35e', d:'Warm, calm, art',         tint:'rgba(201,163,94,.20)', dim:0.0 },
-    arrival:     { name:'Arrival',       icon:'✦', sw:'#e3c489', d:'The overture',             tint:'rgba(201,163,94,.35)', dim:0.15 },
-    immersion:   { name:'Immersion',     icon:'◉', sw:'#5ec8c8', d:'Full experience',          tint:'',                     dim:0.05 },
-    intermission:{ name:'Intermission',  icon:'⏸', sw:'#9bd0d0', d:'Snacks & rules',           tint:'rgba(160,200,200,.18)',dim:0.0 },
-    boss:        { name:'Boss / Tension',icon:'⚡', sw:'#e0655f', d:'Climax — harsh & red',     tint:'rgba(224,90,80,.42)',  dim:0.25, scary:true },
-    victory:     { name:'Victory',       icon:'★', sw:'#e0b04a', d:'Gold celebration',         tint:'rgba(224,190,90,.5)',  dim:0.0 },
-    defeat:      { name:'Defeat',        icon:'☾', sw:'#7a7d88', d:'The dark wins',            tint:'rgba(60,70,90,.5)',    dim:0.35, scary:true },
-    cleanup:     { name:'Cleanup',       icon:'⊙', sw:'#cdd3df', d:'Bright, find the meeples', tint:'rgba(220,225,235,.15)',dim:-0.3 }
+    dining:      { name:'Dining',        icon:'☕', sw:'#c9a35e', d:'Warm, calm, art',         tint:'rgba(201,163,94,.20)', dim:0.0 }
   };
-  var MODE_ORDER = ['dining','arrival','immersion','intermission','boss','victory','defeat','cleanup'];
+  var MODE_ORDER = ['dining'];
 
   var LIGHT_SCENES = {
     gallery:  { name:'Gallery',   sw:'linear-gradient(90deg,#c9a35e,#e3c489)' },
@@ -653,7 +619,7 @@
 
     /* ---- render (control reflects its own state) ---- */
     function render() {
-      var g = GAMES[state.game], m = MODES[state.mode];
+      var g = GAMES[state.game] || GAMES.dining, m = MODES[state.mode] || MODES.dining;   // trimmed registries: server-hydrated games / unknown modes fall back to dining
       q('[data-world]').textContent = g.name;
       q('[data-phase]').textContent = (state.game === 'dining' ? 'At rest' : m.name);
       q('[data-dot]').className = 'ie-dot' + (state.live ? ' live' : '');

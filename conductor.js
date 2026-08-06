@@ -40,11 +40,32 @@ const VID_RE = /\.(mp4|webm|m4v|mov)$/i;                   // video scenes
 const MEDIA_RE = /\.(png|jpe?g|webp|gif|mp4|webm|m4v|mov)$/i;
 const OVL_RE = /\.(png|svg|webp)$/i;                       // overlay art (transparent-centre)
 
+/* RS-CONFIG v1: optional config.json — layout + install config split out of profiles.json.
+   Absent file = legacy behaviour, zero change. Secrets NEVER live here (env only). */
+var CONFIG = {};
+try { CONFIG = JSON.parse(fs.readFileSync(process.env.CONFIG_FILE || path.join(APP_DIR, 'config.json'), 'utf8')); console.log('[config] config.json loaded'); } catch (e) { CONFIG = {}; }
+var AT_REST = CONFIG.atRestMode || 'dining';
+
 /* v2.62: single source of truth for the wall shape — 6 portrait frames, two walls.
    GET /api/layout serves this; internal frame-id lists reference it. The 6-slot
    array semantics of state.frames/frameImages/etc. are unchanged (index order
-   matches LAYOUT.frames). */
-const LAYOUT = { frames: ['L1', 'L2', 'L3', 'R1', 'R2', 'R3'], walls: { L: ['L1', 'L2', 'L3'], R: ['R1', 'R2', 'R3'] } };
+   matches LAYOUT.frames).
+   RS-CONFIG v1: config.json's layout.walls (non-empty object) overrides the built-in
+   shape — frames = concatenation of the wall arrays in key order. */
+const LAYOUT = (function () {
+  var L = { frames: ['L1', 'L2', 'L3', 'R1', 'R2', 'R3'], walls: { L: ['L1', 'L2', 'L3'], R: ['R1', 'R2', 'R3'] } };
+  if (CONFIG.layout && CONFIG.layout.walls && typeof CONFIG.layout.walls === 'object' &&
+      !Array.isArray(CONFIG.layout.walls) && Object.keys(CONFIG.layout.walls).length) {
+    L.walls = CONFIG.layout.walls;
+    L.frames = [];
+    Object.keys(L.walls).forEach(function (k) {
+      (Array.isArray(L.walls[k]) ? L.walls[k] : []).forEach(function (f) { L.frames.push(f); });
+    });
+  }
+  L.roles = (CONFIG.layout && CONFIG.layout.roles) || null;
+  L.orientation = (CONFIG.layout && CONFIG.layout.orientation) || 'portrait';
+  return L;
+})();
 
 const DEFAULT_PROFILES = {
   dining:   { name:'At rest', accent:'#c9a35e', light:'gallery',  ambience:'Quiet room',        music:'—',                  kidSafe:true,  scene:'atrest_default',            frames:['pano','pano','pano','pano','pano','pano'], matte:{ on:true, color:'#f2eee4', width:7, texture:'paper' } }
@@ -99,6 +120,11 @@ const DEFAULT_SETTINGS = {
   timerPresets: []                                          // [{ id, name, mode:'<profileId>'|null, cfg:{type,durationMs,style,color,label,triggers?,bg?,chain?,chess?} }]
 };
 let settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+
+/* RS-REDACT v1: settings copies served over HTTP must never carry the Music
+   Assistant token (secret lives in env / on-disk store only). Every GET that
+   serializes a settings object routes through here. */
+function redactSettings(s){ try{ var c = JSON.parse(JSON.stringify(s||{})); if (c.music) { delete c.music.token; } return c; }catch(e){ return {}; } }
 
 /* ==================== v2.2 PHASES & MOMENTS ====================
    profile.phases = [{ id, name, icon, patch }] — patch is a deep override applied on
@@ -182,6 +208,11 @@ let profiles = Object.assign({}, DEFAULT_PROFILES), tagmap = Object.assign({}, D
     tagmap = Object.assign({}, DEFAULT_TAGMAP, d.tagmap || {});
     if (d.settings) settings = Object.assign({}, DEFAULT_SETTINGS, d.settings);
   } else { try { fs.writeFileSync(PROFILES_FILE, JSON.stringify({ profiles, tagmap }, null, 2)); } catch (e) {} }
+  /* RS-CONFIG v1: config.json overrides sit on top of profiles.json's settings.
+     Re-applied here on every load of the profiles store. */
+  if (CONFIG.ha)    settings.ha    = Object.assign({}, settings.ha, CONFIG.ha);
+  if (CONFIG.rooms) settings.rooms = CONFIG.rooms;
+  if (CONFIG.edges) settings.edges = CONFIG.edges;
 })();
 
 /* -------------------- MEDIA library (scenes = images + videos; overlays) -------------------- */
@@ -900,7 +931,7 @@ function coreHandler(req, res) {
 
   if (p.startsWith('/api/')) {
     if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'RoomScape Conductor', version: '4.24', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
-    if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls });   // v2.62: wall shape, single source of truth
+    if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST });   // v2.62: wall shape, single source of truth · RS-CONFIG v1: roles/orientation/atRest
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, state);
     if (p === '/api/scenes') return sendJSON(res, 200, { count: Object.keys(landIndex).length, thumbs: thumbKind, scenes: Object.keys(landIndex).sort().map(function (k) { const l = landIndex[k]; const e = encodeURIComponent(l[0]); const d = path.dirname(l[0]).replace(/\\/g, '/'); const dm = (global.__rsDims || {})[l[0]]; const ori = (dm && dm.w && dm.h) ? (dm.w > dm.h ? 'l' : (dm.h > dm.w ? 'p' : 's')) : null; return { key: k, count: l.length, dir: (d === '.' ? '' : d), ori: ori, sample: '/media/' + e, thumb: '/thumb/' + encodeURIComponent(path.basename(l[0])) + '?src=media&w=320&p=' + e, video: VID_RE.test(l[0]) }; }) });   // v2.40 dir = folder path; v2.41 ori = p|l|s from RS-SCENE-DIMS (null while unprobed / video)
     if (p === '/api/overlays') return sendJSON(res, 200, { count: overlayList.length, thumbs: thumbKind, overlays: overlayList.map(function (f) { const e = encodeURIComponent(f); return { file: f, url: '/overlays/' + e, thumb: '/thumb/' + e + '?src=overlays&w=240' }; }) });
@@ -984,11 +1015,23 @@ function coreHandler(req, res) {
       out.sort();
       return sendJSON(res, 200, { sounds: out });
     }
-    if (p === '/api/profiles' && req.method === 'GET') return sendJSON(res, 200, { profiles, tagmap, settings });
+    if (p === '/api/profiles' && req.method === 'GET') return sendJSON(res, 200, { profiles, tagmap, settings: redactSettings(settings) });   // RS-REDACT v1
     if (p === '/api/profiles' && req.method === 'POST') return readBody(req, function (b) {
       if (!b || !b.profiles) return sendJSON(res, 400, { ok: false, error: 'need {profiles, tagmap}' });
       backupFile(PROFILES_FILE);
-      profiles = b.profiles; if (b.tagmap) tagmap = b.tagmap; if (b.settings) settings = b.settings;
+      profiles = b.profiles; if (b.tagmap) tagmap = b.tagmap;
+      if (b.settings) {
+        /* RS-REDACT v1: GET /api/profiles serves settings WITHOUT music.token, and the
+           app round-trips that object straight back here — so an incoming body with a
+           missing/empty token means "keep what you have", not "wipe it". url/player
+           remain client-editable; only the token is secret. */
+        var prevTok = (settings && settings.music && settings.music.token) || '';
+        settings = b.settings;
+        if (prevTok && (!settings.music || !settings.music.token)) {
+          settings.music = settings.music || {};
+          settings.music.token = prevTok;
+        }
+      }
       // v2.52: 'dining' is the panic/default mode — applyProfile('dining') throws if
       // it's gone. The pguard wipe-block only rejects payloads missing ≥2 modes, so
       // a payload missing just dining could slip through. Re-seed it.
@@ -3922,8 +3965,14 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             if (!/^profiles-[A-Za-z0-9._-]+\.json$/.test(q)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end('{"ok":false,"error":"bad name"}'); }
             var fp = path.join(HDIR, q);
             if (!fs.existsSync(fp)) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end('{"ok":false,"error":"not found"}'); }
+            /* RS-REDACT v1: snapshots hold the full settings block — parse, strip
+               music token, re-serialize. Unparseable snapshot = 500, never raw. */
+            var snap = null;
+            try { snap = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (pe) { snap = null; }
+            if (!snap || typeof snap !== 'object') { res.writeHead(500, { 'Content-Type': 'application/json' }); return res.end('{"ok":false,"error":"snapshot unreadable"}'); }
+            if (snap.settings) snap.settings = redactSettings(snap.settings);
             res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-            return res.end(fs.readFileSync(fp));
+            return res.end(JSON.stringify(snap));
           }
           var list = [];
           try {
@@ -4313,7 +4362,12 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
           return;
         }
         if (p === '/api/profiles-live' && req.method === 'GET') {
-          try { W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(fs.readFileSync(PF)); } catch (e) { out(500, { ok: false, error: 'store unreadable' }); }
+          /* RS-REDACT v1: parse + strip music token before serving; parse fail = 500, never raw */
+          try {
+            var liveJ = JSON.parse(fs.readFileSync(PF, 'utf8'));
+            if (liveJ && liveJ.settings) liveJ.settings = redactSettings(liveJ.settings);
+            W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(liveJ));
+          } catch (e) { out(500, { ok: false, error: 'store unreadable' }); }
           return;
         }
         if (p === '/api/profiles-baks' && req.method === 'GET') {
@@ -4322,7 +4376,12 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
             if (!OK_RE.test(f)) return out(400, { ok: false, error: 'bad name' });
             var fp = path.join(BDIR, f);
             if (!fs.existsSync(fp)) return out(404, { ok: false, error: 'not found' });
-            try { W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(fs.readFileSync(fp)); } catch (e) { out(500, { ok: false }); }
+            /* RS-REDACT v1: parse + strip music token before serving; parse fail = 500, never raw */
+            try {
+              var bakJ = JSON.parse(fs.readFileSync(fp, 'utf8'));
+              if (bakJ && bakJ.settings) bakJ.settings = redactSettings(bakJ.settings);
+              W(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); E(JSON.stringify(bakJ));
+            } catch (e) { out(500, { ok: false, error: 'backup unreadable' }); }
             return;
           }
           return out(200, { ok: true, dir: BDIR, baks: listBaks() });

@@ -1,5 +1,5 @@
 {
-  "_comment": "Target config schema (Phase 1 — see ROADMAP.md). In v0.10 settings still live in profiles.json's settings block; this file documents where they are moving. Copy to config.json when the loader lands. NO SECRETS HERE — tokens go in .env.",
+  "_comment": "Copy to config.json. Loaded at boot; absent file = defaults. NO SECRETS — tokens go in .env.",
 
   "atRestMode": "atrest",
 
