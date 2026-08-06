@@ -1,5 +1,15 @@
 /* ===================================================================
-   The Immersion Engine — transition & effects layer (fx.js)  v1.61
+   The Immersion Engine — transition & effects layer (fx.js)  v1.62
+   v1.62 (RS-SEC v1.02 — frontend security + bug pass):
+   (B7) escA() attribute-escapes every WS-supplied media URL the render path
+   pastes into a src="…" or a style="…url('…')" — pano/portrait scenes, effect
+   loops, viz + playlist backgrounds, timer backgrounds, player photos, cue-card
+   images and the design-preview poster. A quote in a filename (or in a theme
+   pack someone downloaded) used to escape the attribute.
+   (C10) the delegated media-error handler no longer replaceChild()s the failing
+   element — cached references (the GL transition layers' .ie-pano handles) were
+   left pointing at a detached node. It hides the element in place and inserts
+   the placeholder beside it.
    v1.61 (Phase 3c, RS-THEMES): missing-media placeholders — a theme pack's
    declared-but-absent file arrives as a /media/__missing__%2F<pack>%2F<rel>
    ref whose URL 404s. missingRef()/missingPanel() (beside the Phase 2d
@@ -147,6 +157,20 @@
   'use strict';
   var IE = g.IE; if (!IE) return;
   var D = document;
+  /* v1.62 (RS-SEC v1.02, B7): every media URL below arrives inside a WS-pushed
+     state object — state.frameImages / effectImages, prompter.img, timer and
+     viz backgrounds, player photos. Their ultimate source is a filename on the
+     media share or a theme pack the household downloaded, and they are pasted
+     into src="…" and style="…url('…')". A single quote in a filename closed
+     the attribute; a double quote closed it AND opened a new one. The music
+     lane at the bottom of this file already had its own esc(); this is the
+     same idea for the main render path (IE.escAttr is the shared copy in
+     engine.js — kept local-with-fallback so fx.js still parses standalone). */
+  var escA = IE.escAttr || function (s) {
+    return (s == null ? '' : ('' + s)).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
 
   /* -------- catalogue (also used to build the control picker) -------- */
   var TRANSITIONS = ['crossfade','blurfade','rackfocus','dipblack','dipwhite','dipaccent','cut','pushleft','pushright','wipe','iris','zoomblur','blinds','glitch','pixelate','ripple','morph'];
@@ -413,13 +437,13 @@
     if (isVid(url)) {
       var vf = !portrait ? null : (fit === 'stretch' ? 'fill' : (fit === 'contain' || fit === 'width' || fit === 'height') ? 'contain' : 'cover');
       var st = portrait ? 'left:0;width:100%;height:100%;object-fit:' + vf : wallW(wsz) + 'left:' + (-col * 100) + '%;object-fit:fill';
-      return '<video class="ie-pano" autoplay muted loop playsinline preload="auto" style="' + st + '"><source src="' + url + '"></video>';
+      return '<video class="ie-pano" autoplay muted loop playsinline preload="auto" style="' + st + '"><source src="' + escA(url) + '"></video>';   /* v1.62 (B7) */
     }
     if (portrait) {
       var bs = fit === 'contain' ? 'contain' : fit === 'stretch' ? '100% 100%' : fit === 'width' ? '100% auto' : fit === 'height' ? 'auto 100%' : 'cover';
-      return '<div class="ie-pano" style="left:0;width:100%;background-image:url(\'' + url + '\');background-size:' + bs + ';background-position:center;background-repeat:no-repeat"></div>';
+      return '<div class="ie-pano" style="left:0;width:100%;background-image:url(\'' + escA(url) + '\');background-size:' + bs + ';background-position:center;background-repeat:no-repeat"></div>';   /* v1.62 (B7) */
     }
-    return '<div class="ie-pano" style="' + wallW(wsz) + 'left:' + (-col * 100) + '%;background-image:url(\'' + url + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
+    return '<div class="ie-pano" style="' + wallW(wsz) + 'left:' + (-col * 100) + '%;background-image:url(\'' + escA(url) + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';   /* v1.62 (B7) */
   }
   function panoLayer(img, col, gradient, wsz) {
     if (img) return mediaEl(img, col, false, null, wsz);
@@ -428,7 +452,7 @@
   function vidPoster(url) {   // design-preview stand-in for video scenes (v0.92; v0.93 click-to-play)
     var name = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1)).replace(/\.[^.]+$/, '');
     return '<div class="ie-pano" style="left:0;width:100%;background:linear-gradient(160deg,#171b26,#0b0d13)"></div>'
-      + '<div class="ie-vidposter" data-src="' + url + '" style="cursor:pointer">▶<span>' + name + '</span><i>video — plays on the TVs · click to test here</i></div>';
+      + '<div class="ie-vidposter" data-src="' + escA(url) + '" style="cursor:pointer">▶<span>' + escA(name) + '</span><i>video — plays on the TVs · click to test here</i></div>';
   }
   /* v0.93: clicking a preview poster swaps in a real muted video (user gesture) */
   D.addEventListener('click', function (e) {
@@ -494,7 +518,20 @@
       + '<div style="max-width:82%;word-break:break-word">' + name.replace(/[&<>"]/g, '') + '</div>'
       + '<div style="font-size:1.9cqmin;letter-spacing:.12em;text-transform:uppercase;color:#6a6d79">missing media</div>';
     try { if (t.tagName === 'VIDEO') { t.pause && t.pause(); } } catch (err2) {}
-    try { if (t.parentNode) t.parentNode.replaceChild(d, t); } catch (err3) {}
+    /* v1.62 (RS-SEC v1.02, C10): this used to replaceChild(d, t). Long-lived
+       code caches these very nodes — the GL transition layers hold their
+       .ie-pano media across a whole crossfade, syncView keeps view.efx/ovl
+       handles — and after the swap those references pointed at a DETACHED
+       node: the transition drew nothing and every later write went into
+       limbo. Keep the failing element ATTACHED (just hidden, and paused) and
+       insert the placeholder beside it, in the same box. The next state
+       change rewrites the parent's innerHTML and both disappear together. */
+    try {
+      if (t.parentNode) {
+        t.style.display = 'none';
+        t.parentNode.insertBefore(d, t.nextSibling);
+      }
+    } catch (err3) {}
   }, true);
   function buildLayerHTML(state, idx) {
     var g0 = IE.GAMES[state.game] || IE.GAMES.dining, m = IE.MODES[state.mode] || IE.MODES.dining;
@@ -540,8 +577,8 @@
     if (mref) return missingPanel(mref);
     var dim = (bg.dim != null ? bg.dim : 0.35);
     var media = bg.video
-      ? '<video class="ie-bgv" src="' + bg.url + '" autoplay muted loop playsinline></video>'
-      : '<div class="ie-bgi" style="background-image:url(\'' + bg.url + '\')"></div>';
+      ? '<video class="ie-bgv" src="' + escA(bg.url) + '" autoplay muted loop playsinline></video>'   /* v1.62 (B7) */
+      : '<div class="ie-bgi" style="background-image:url(\'' + escA(bg.url) + '\')"></div>';
     return media + '<div class="ie-bgdim" style="background:rgba(0,0,0,' + dim + ')"></div>';
   }
   // v1.06 a frameViz/framePlaylist bg is {url,video,dim} live (conductor-resolved) but
@@ -586,7 +623,7 @@
     var top = rows[0] && rows[0].score;
     function av(p, i, size) {
       var col = p.color || PAL[i % PAL.length];
-      if (p.photo) return '<span style="display:inline-block;width:' + size + 'cqmin;height:' + size + 'cqmin;border-radius:50%;background:url(\'' + p.photo + '\') center/cover;flex:none;box-shadow:0 0 0 .5cqmin ' + col + '"></span>';
+      if (p.photo) return '<span style="display:inline-block;width:' + size + 'cqmin;height:' + size + 'cqmin;border-radius:50%;background:url(\'' + escA(p.photo) + '\') center/cover;flex:none;box-shadow:0 0 0 .5cqmin ' + escA(col) + '"></span>';   /* v1.62 (B7) */
       return '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + size + 'cqmin;height:' + size + 'cqmin;border-radius:50%;background:' + col + ';color:#14151a;font:700 ' + (size * 0.46) + 'cqmin sans-serif;flex:none">' + (p.name || '?').charAt(0).toUpperCase() + '</span>';
     }
     if (S.finished) {
@@ -678,8 +715,8 @@
     // v1.17: chess owns the whole panel — an empty roster falls back to the normal styles
     var chess = !!(T.type === 'chess' && T.chess && Array.isArray(T.chess.players) && T.chess.players.length);
     var bgHtml = '';
-    if (bg.type === 'image' && bg.url) bgHtml = '<div class="ie-tbg" style="background-image:url(\'' + bg.url + '\')"></div><div class="ie-tbgdim"></div>';
-    else if (bg.type === 'video' && bg.url) bgHtml = '<video class="ie-tbg" src="' + bg.url + '" autoplay muted loop playsinline></video><div class="ie-tbgdim"></div>';
+    if (bg.type === 'image' && bg.url) bgHtml = '<div class="ie-tbg" style="background-image:url(\'' + escA(bg.url) + '\')"></div><div class="ie-tbgdim"></div>';   /* v1.62 (B7) */
+    else if (bg.type === 'video' && bg.url) bgHtml = '<video class="ie-tbg" src="' + escA(bg.url) + '" autoplay muted loop playsinline></video><div class="ie-tbgdim"></div>';
     var body;
     if (chess) body = chessBody(T);
     else if (style === 'analog') body = '<svg class="ie-tanalog" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46" class="ie-tdial"/><line x1="50" y1="50" x2="50" y2="12" class="ie-thand" data-thand/></svg><div class="ie-tnum ie-tsub" data-tnum>0:00</div>';
@@ -1627,7 +1664,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
         else {
           var ct = (pr.text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
           cEl.innerHTML = pr.img
-            ? '<div class="ie-cue-full"><img src="' + pr.img + '" alt=""></div>'
+            ? '<div class="ie-cue-full"><img src="' + escA(pr.img) + '" alt=""></div>'   /* v1.62 (B7): cue-card images come from the deck files */
             : (pr.style === 'card'
               ? '<div class="ie-cue-card">' + ct + '</div>'
               : '<div class="ie-cue-plac"><i></i>' + ct + '</div>');
@@ -1664,7 +1701,7 @@ function phUrl(ph, wPct) {                            // ALWAYS server-resize (s
     if (eff !== view.effKey) {
       view.effKey = eff;
       releaseMedia(view.efx);
-      view.efx.innerHTML = eff ? '<video autoplay muted loop playsinline preload="auto"><source src="' + eff + '"></video>' : '';
+      view.efx.innerHTML = eff ? '<video autoplay muted loop playsinline preload="auto"><source src="' + escA(eff) + '"></video>' : '';   /* v1.62 (B7) */
       kickMedia(view.efx);
     }
 

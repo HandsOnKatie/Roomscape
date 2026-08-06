@@ -1,5 +1,13 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RoomScape Scoreboard</title><style>
+<title>RoomScape Scoreboard</title>
+<!-- RoomScape scoreboard — v1.1
+     v1.1 (RS-SEC v1.02): B6 full & < > " ' escaping (was & and < only), the
+     cover-image src is URL-encoded and the delete handle's data-id is escaped.
+     C4 this page never loads app.js, so its POST /api/scores carried no admin
+     token and silently 401'd after the v1.01 backend pass — the row vanished
+     from the table and reappeared on the next poll with no explanation. It now
+     sends x-rs-token from localStorage('rs-admin-token'), prompts for one on a
+     401, and reports failures. --><style>
 :root{--bg:#0b0c10;--panel:#171922;--panel2:#1d2029;--line:#2a2d38;--ink:#e8e6df;--dim:#a7a499;--faint:#6a6d79;--gold:#c9a35e;--gold2:#e3c489}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:1100px;margin:0 auto}
 h1{font:700 26px "Iowan Old Style",Palatino,Georgia,serif;color:var(--gold2);margin:0 0 4px}
@@ -31,7 +39,28 @@ button{background:var(--panel2);border:1px solid var(--gold);color:var(--gold2);
 var Q=String.fromCharCode(34);
 var PAL=["#2f8f55","#b98a26","#c2496a","#7a5fe0","#12a3a3"];
 var DATA=null,RULES={};
-function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;")}
+/* v1.1 (RS-SEC v1.02, B6): full attribute-safe escape. Player names, game ids
+   and rules names are all user-authored (or theme-pack authored) strings, and
+   several of them land inside attributes below. */
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+/* v1.1 (RS-SEC v1.02, C4): the admin token. This page is standalone — app.js
+   and its RS-AUTH fetch wrapper are never loaded here — so every write has to
+   carry the header itself. */
+var TOKKEY="rs-admin-token";
+function tok(){try{return localStorage.getItem(TOKKEY)||""}catch(e){return ""}}
+function saveScores(){
+ var h={"Content-Type":"application/json"},t=tok();
+ if(t)h["x-rs-token"]=t;
+ return fetch("/api/scores",{method:"POST",headers:h,body:JSON.stringify(DATA)}).then(function(r){
+  if(r.ok)return load();
+  if(r.status===401){
+   var v=prompt("Admin token? (the Conductor printed it at first boot; it also lives in data/admin-token)",t||"");
+   if(v&&v.trim()){try{localStorage.setItem(TOKKEY,v.trim())}catch(e){}return saveScores();}
+   alert("Not saved \u2014 the Conductor needs the admin token for changes.");return load();
+  }
+  return r.text().then(function(txt){alert("Not saved \u2014 the Conductor answered HTTP "+r.status+(txt?": "+txt.slice(0,200):""));return load();});
+ }).catch(function(e){alert("Not saved \u2014 could not reach the Conductor"+((e&&e.message)?" ("+e.message+")":"")+".");});
+}
 function pcolor(name){var i=(DATA.players||[]).findIndex(function(p){return p.name===name});return PAL[(i<0?0:i)%PAL.length]}
 function hbar(el,rows,unit){
  if(!rows.length){el.innerHTML="<span class=mut>Nothing here yet. Play something tonight, then tap \ud83c\udfc6 Scores in the app \u2014 this page comes alive with the first result.</span>";return}
@@ -68,19 +97,19 @@ function render(){
  document.getElementById("champsHead").style.display=Object.keys(gwins).length?"":"none";
   document.getElementById("champs").innerHTML=Object.keys(gwins).map(function(g){
   var w=Object.keys(gwins[g]).sort(function(a,b){return gwins[g][b]-gwins[g][a]})[0];
-  return "<div class=cg><img src=" + Q + "/media/covers/cover_"+g+".jpg" + Q + " onerror=" + Q + "this.remove()" + Q + " ><div><div class=n>"+esc(gname(g))+"</div><div class=w>WINS: "+esc(w)+" x"+gwins[g][w]+"</div></div></div>"}).join("");
+  return "<div class=cg><img src=" + Q + "/media/covers/cover_"+encodeURIComponent(g)+".jpg" + Q + " onerror=" + Q + "this.remove()" + Q + " ><div><div class=n>"+esc(gname(g))+"</div><div class=w>WINS: "+esc(w)+" x"+gwins[g][w]+"</div></div></div>"}).join("");   /* v1.1 (B6) */
  document.querySelector("#results tbody").innerHTML=res.slice().reverse().map(function(r){
   var winners=r.players.filter(function(p){return p.won}).map(function(p){return "<span class=wchip>W "+esc(p.name)+"</span>"}).join("");
   var scores=r.players.filter(function(p){return p.score!=null}).map(function(p){return esc(p.name)+" "+p.score}).join(", ");
   var row="<tr><td>"+new Date(r.dateISO).toLocaleDateString("en-GB")+"</td><td>"+esc(r.name||gname(r.game))+"</td><td>"+winners+"</td>";
   row+="<td class=mut>"+r.players.map(function(p){return esc(p.name)}).join(", ")+"</td><td class=mut>"+esc(scores)+"</td>";
-  row+="<td><span class=del data-id=" + Q + r.id + Q + ">x</span></td></tr>";return row}).join("");
+  row+="<td><span class=del data-id=" + Q + esc(r.id) + Q + ">x</span></td></tr>";return row}).join("");   /* v1.1 (B6) */
  Array.prototype.forEach.call(document.querySelectorAll(".del"),function(d){d.onclick=function(){
   if(!confirm("Delete this result?"))return;
   DATA.results=DATA.results.filter(function(r){return r.id!==d.dataset.id});
-  fetch("/api/scores",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(DATA)}).then(load)}})}
+  saveScores()}})}
 function addPlayer(){var v=document.getElementById("newp").value.trim();if(!v)return;
  if(!DATA.players.some(function(p){return p.name===v}))DATA.players.push({name:v});
- fetch("/api/scores",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(DATA)}).then(load);document.getElementById("newp").value=""}
+ saveScores();document.getElementById("newp").value=""}
 load();setInterval(load,30000);
 </script></body></html>

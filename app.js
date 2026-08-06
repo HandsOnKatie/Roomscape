@@ -1,5 +1,28 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.83
+   RoomScape — Play & Design app (app.js)  v3.84
+   v3.84 (RS-SEC v1.02 — frontend security + bug pass, follows the v1.01
+   backend hardening):
+     A1 the WebSocket URL now carries ?token=<admin token> when one is stored,
+        because the conductor refuses state pushes from tokenless sockets — the
+        master-volume slider and the Design style picker were silently dead
+        without it. setAdminTok() re-dials the socket so the token entered at
+        the 401 prompt takes effect without a reload.
+     A2 /api/kid (and the /api/rescan fallback in the library lane) were bare
+        GETs against paths the conductor now token-gates whatever the verb —
+        both go through post() now.
+     B1-B4 stored-XSS closes: mode ids, frame ids, thumbnail/artwork URLs, HA
+        scene + effect names, social ids and EVERY opt() <option> are escaped;
+        the wizard's Custom-walls parser validates ids (/^[A-Za-z0-9_-]{1,12}$/,
+        no duplicates) and builds its walls with Object.create(null).
+     C1 wizAdoptLayout derives roles instead of keeping stale ones.
+     C3 the wizard's Next button is disabled during its async save.
+     C5 the fetch wrapper only attaches the token same-origin, understands
+        Headers instances, and no longer mis-handles Request objects.
+     C7 layout adoption goes through the single IE.adoptLayoutPayload.
+     C8 the theme ⚠ list is found by dataset value, not a built CSS selector.
+     C9 theme import reads the body as text before parsing and locks the
+        control while in flight.
+     C13 removed the dead Sound-Studio VIZ_STYLES copy.
    v3.83 (Phase 4b, RS-WIZARD): first-run experience —
    (a) 🚀 first-run setup wizard (openSetupWizard): one sheet, five skippable
    steps with progress dots — room name / layout (frame count + walls) /
@@ -573,7 +596,12 @@
     $('#rsaskno').onclick = askDismiss;
     setTimeout(function () { var b = $('#rsaskok'); if (b) b.focus(); }, 60);
   }
-  function opt(list, cur) { return list.map(function (o) { var v = o.v != null ? o.v : o, l = o.l != null ? o.l : o; return '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + l + '</option>'; }).join(''); }
+  /* v3.84 (RS-SEC v1.02, B2): opt() had ~20 call sites and escaped NEITHER the
+     value nor the label, while several of them are fed strings that come from
+     outside this house — HA entity + scene names, Music Assistant player and
+     playlist names, theme-pack mode ids, sound filenames. One fix here covers
+     every one of them. */
+  function opt(list, cur) { return list.map(function (o) { var v = o.v != null ? o.v : o, l = o.l != null ? o.l : o; return '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join(''); }
   function api(p, opts) { return fetch(p, opts).then(function (r) { if (r.ok) return r.json(); return r.text().then(function (t) { var m = t; try { m = (JSON.parse(t).error) || t; } catch (e) {} try { window.dispatchEvent(new CustomEvent('rs-api-error', { detail: { path: p, status: r.status, msg: String(m).slice(0, 300) } })); } catch (e) {} var err = new Error(String(m).slice(0, 300)); err.status = r.status; throw err; }); }); } /* rs-harden api v1 */
   function post(p, body) { return api(p, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { method: 'POST' }); }
   /* ---- RS-AUTH v1 (Phase 4a): admin-token plumbing ----
@@ -587,7 +615,14 @@
      safe. */
   var RS_TOK_KEY = 'rs-admin-token';
   function adminTok() { try { return localStorage.getItem(RS_TOK_KEY) || ''; } catch (e) { return ''; } }
-  function setAdminTok(v) { try { localStorage.setItem(RS_TOK_KEY, v); } catch (e) {} }
+  /* v3.84 (RS-SEC v1.02, A1): storing a token must also re-dial the WebSocket —
+     the live socket was opened tokenless and can never publish state. The bus
+     doesn't exist yet at this point in the file, so the hook is looked up
+     lazily off window (installed right after createBus below). */
+  function setAdminTok(v) {
+    try { localStorage.setItem(RS_TOK_KEY, v); } catch (e) {}
+    try { if (typeof window.__rsWsReconnect === 'function') window.__rsWsReconnect(); } catch (e) {}
+  }
   var askingTok = null;   // concurrent 401s share one prompt
   function promptAdminTok() {
     if (askingTok) return askingTok;
@@ -603,13 +638,41 @@
     return askingTok;
   }
   var realFetch = window.fetch.bind(window);
+  /* v3.84 (RS-SEC v1.02, C5): three holes in the wrapper.
+     (a) the admin token was attached to ANY absolute URL — a POST to a foreign
+         host (an appended block talking to Music Assistant / HA directly, a
+         pasted URL) handed the room's admin secret to that host. Only
+         same-origin requests get it now.
+     (b) `new Headers(...)` has no own enumerable properties, so
+         Object.assign({}, headers) produced {} — every caller-supplied header
+         was silently DROPPED (Content-Type included). Headers instances are
+         now unpacked with Object.fromEntries.
+     (c) a Request-object call (fetch(new Request(url,{method:'POST'}))) read
+         its method off `init`, saw GET, and skipped the token entirely — a
+         POST that always 401s. We detect it, read the real method, and (since
+         a Request's headers can't be extended without rebuilding it) pass it
+         through untouched rather than pretending it was decorated. */
+  function sameOrigin(u) {
+    try { return new URL(u, location.href).origin === location.origin; } catch (e) { return false; }
+  }
+  function reqUrl(input) {
+    if (typeof input === 'string') return input;
+    if (input && typeof input.url === 'string') return input.url;
+    return String(input == null ? '' : input);
+  }
   window.fetch = function (input, init) {
-    var m = String((init && init.method) || 'GET').toUpperCase();
+    var isReq = (typeof Request === 'function') && (input instanceof Request);
+    var m = String((init && init.method) || (isReq ? input.method : '') || 'GET').toUpperCase();
     if (m === 'GET' || m === 'HEAD') return realFetch(input, init);
+    if (isReq && !(init && init.method)) return realFetch(input, init);   // (c) can't decorate a Request in place — pass through
+    if (!sameOrigin(reqUrl(input))) return realFetch(input, init);        // (a) never leak the token cross-origin
     function withTok(base) {
       var t = adminTok(); if (!t) return base;
       var i2 = Object.assign({}, base || {});
-      i2.headers = Object.assign({}, (base && base.headers) || {});
+      var bh = base && base.headers;
+      i2.headers = (typeof Headers === 'function' && bh instanceof Headers)
+        ? Object.fromEntries(bh.entries())                                 // (b)
+        : Object.assign({}, bh || {});
       i2.headers['x-rs-token'] = t;
       return i2;
     }
@@ -639,8 +702,23 @@
   }
 
   /* ---------------- bus (room truth) ---------------- */
-  var wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  /* v3.84 (RS-SEC v1.02, A1): the conductor only accepts a {type:'state'} push
+     from a socket whose UPGRADE URL carried ?token=<admin token> (RS-SEC F2) —
+     a tokenless socket is read-only. Everything in this app that changes the
+     room by publishing on the bus rather than POSTing (the master-volume
+     slider, fx.js's Design style picker) was silently dead without it. The
+     token comes from the same localStorage key the fetch wrapper uses, and
+     setAdminTok() re-dials the socket the moment one is entered — before that
+     the app has no token to present. frame.html deliberately stays tokenless:
+     frames only ever listen. */
+  var wsBase = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  function wsUrlWithTok() {
+    var tok = adminTok();
+    return wsBase + (tok ? (wsBase.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tok) : '');
+  }
+  var wsUrl = wsUrlWithTok();
   var bus = IE.createBus('app', { ws: wsUrl });
+  window.__rsWsReconnect = function () { try { if (bus && bus.reconnect) bus.reconnect(wsUrlWithTok()); } catch (e) {} };
   var _lastGame = null;
   bus.onState(function (s) {
     live.state = s; renderNow(); renderPlayLive();
@@ -694,13 +772,15 @@
       api('/api/layout').catch(function () { return null; })   // v2.64: wall shape from the conductor; null = keep the static fallback (older conductor)
     ]).then(function (r) {
       var bf = $('#bootfail'); if (bf) bf.remove();   // v2.44 (QW9)
-      var lj = r[10];   // v2.64: adopt the conductor's layout BEFORE any normalize/render below
-      if (lj && lj.ok && Array.isArray(lj.frames) && lj.frames.length) {
+      /* v3.84 (RS-SEC v1.02, C7): ONE adoption predicate for all three call
+         sites (here, wizAdoptLayout, frame.html) — IE.adoptLayoutPayload. */
+      var lj = IE.adoptLayoutPayload ? IE.adoptLayoutPayload(r[10]) : r[10];
+      if (lj && Array.isArray(lj.frames) && lj.frames.length) {
         layout.frames = lj.frames.slice();
-        layout.walls = (lj.walls && Object.keys(lj.walls).length) ? lj.walls : wallsFromFrames(layout.frames);
-        layout.roles = (lj.roles && lj.roles.primary) ? lj.roles
-          : (IE.deriveRoles ? IE.deriveRoles(layout.walls, layout.frames) : layout.roles);   /* Phase 2c: server roles win, else derive */
+        layout.walls = lj.walls || wallsFromFrames(layout.frames);
+        layout.roles = lj.roles || layout.roles;
         layout.atRest = lj.atRest || layout.atRest;                                          /* Phase 2c */
+        layout.orientation = lj.orientation || layout.orientation;
         FRAME_IDS = layout.frames;
         window.__rsLayout = layout;
         if (IE.setLayout) IE.setLayout(layout);   /* Phase 2a: engine helpers (slotOf/wallKeyOf/…) follow the adopted layout */
@@ -740,7 +820,7 @@
   function renderHealth() {
     $('#hdot').classList.toggle('ok', !!(health && health.ok));
     var frames = (health && health.frames) || [];
-    $('#tvdots').innerHTML = FRAME_IDS.map(function (f) { return '<i class="' + (frames.indexOf(f) >= 0 ? 'on' : '') + '" title="' + f + '"></i>'; }).join('');
+    $('#tvdots').innerHTML = FRAME_IDS.map(function (f) { return '<i class="' + (frames.indexOf(f) >= 0 ? 'on' : '') + '" title="' + esc(f) + '"></i>'; }).join('');   /* v3.84 (B3): frame ids come from /api/layout, i.e. from config.json */
   }
 
   /* ---------------- spaces ---------------- */
@@ -830,7 +910,12 @@
     bus.publish(s);
   });
   /* v2.44 (QW8): toasts only after the server answers — the optimistic toast lied on failure */
-  $('#kidtgl').onclick = function () { var on = !(live.state && live.state.kid); fetch('/api/kid?on=' + (on ? 1 : 0)).then(function (r) { toast(r.ok ? 'Kid-safe ' + (on ? 'on' : 'off') : 'Could not reach the Conductor'); }).catch(function () { toast('Could not reach the Conductor'); }); };
+  /* v3.84 (RS-SEC v1.02, A2): /api/kid MUTATES but answers any verb, so the
+     conductor's RS-SEC F3 gate demands the admin token on it whatever the
+     method — and the fetch wrapper above only decorates non-GETs. This was a
+     bare GET, so kid-safe stopped working entirely (401) after the backend
+     pass. Route it through post() like every other mutation. */
+  $('#kidtgl').onclick = function () { var on = !(live.state && live.state.kid); post('/api/kid?on=' + (on ? 1 : 0)).then(function () { toast('Kid-safe ' + (on ? 'on' : 'off')); }).catch(function () { toast('Could not reach the Conductor'); }); };
   $('#panic').onclick = function () { post('/api/panic').then(function () { toast('⟲ Restoring Dining Mode'); }).catch(function () { toast('Could not reach the Conductor'); }); };
   /* v2.44 (QW7): the truth bar is also the door — tap the live mode's name for its dashboard */
   $('#nowname').onclick = function () { var s = live.state; if (!s || !s.game || s.game === '_draft' || !profiles[s.game]) return; openModeDash(s.game); };
@@ -854,7 +939,13 @@
   function pcardHTML(id) {
     var p = profiles[id], th = sceneThumb(p.scene);
     var pk = id.indexOf('.') > 0 ? id.slice(0, id.indexOf('.')) : null;   /* Phase 3c: namespaced id = theme-pack mode */
-    return '<div class="pcard" data-id="' + id + '"' + (th ? ' style="background-image:url(\'' + th.replace(/'/g, '%27') + '\')"' : '') + '>'
+    /* v3.84 (RS-SEC v1.02, B1+B4): the mode id and the thumbnail path are both
+       attacker-reachable (a theme pack chooses its own mode ids; a filename on
+       the media share becomes the thumb URL). The id was raw in an attribute,
+       and %27-ing only the apostrophe left the DOUBLE quote free to close
+       style="…" — esc() handles both layers, and the %27 stays for the CSS
+       url('…') string inside. */
+    return '<div class="pcard" data-id="' + esc(id) + '"' + (th ? ' style="background-image:url(\'' + esc(th.replace(/'/g, '%27')) + '\')"' : '') + '>'
       + '<div class="shade"></div><span class="livebdg">LIVE</span>' + (isFav(id) ? '<span class="pfav">★</span>' : '')
       + (pk ? '<span class="pbadge" title="Theme pack: ' + esc(pk) + '">🧩</span>' : '')
       + '<div style="position:relative;width:100%"><div class="nm">' + esc(p.name || id) + '</div><div class="ds">' + esc(p.ambience || '') + '</div></div>'
@@ -991,7 +1082,7 @@
     });
     // light scene chips
     var scNames = (haRoom && haRoom.scenes) || Object.keys((settings.ha && settings.ha.lightScenes) || {});
-    $('#lightchips').innerHTML = scNames.map(function (s2) { return '<button class="chip" data-ls="' + s2 + '">' + s2 + '</button>'; }).join('') || '<span class="hint">Home Assistant not configured</span>';
+    $('#lightchips').innerHTML = scNames.map(function (s2) { return '<button class="chip" data-ls="' + esc(s2) + '">' + esc(s2) + '</button>'; }).join('') || '<span class="hint">Home Assistant not configured</span>';   /* v3.84 (B2): HA scene names are user-authored in HA */
     $$('#lightchips [data-ls]').forEach(function (b) { b.onclick = function () { post('/api/ha/lightscene', { scene: b.dataset.ls }).then(function (j) { toast(j.ok ? 'Lights: ' + b.dataset.ls : 'Lights unavailable'); }); }; });
     renderPlayLive();
   }
@@ -1084,7 +1175,7 @@
     if (want) musPls.some(function (pl) { if ((pl.name || '').toLowerCase() === want.toLowerCase()) { mpl = pl; return true; } return false; });
     if (mpl) {
       var pr = plParse(mpl.name);
-      h += '<div class="modemus" id="musmode"><span class="ic"' + (mpl.image ? ' style="background-image:url(\'' + mpl.image.replace(/'/g, '%27') + '\')"' : '') + '>' + (mpl.image ? '' : '♪') + '</span>'
+      h += '<div class="modemus" id="musmode"><span class="ic"' + (mpl.image ? ' style="background-image:url(\'' + esc(mpl.image.replace(/'/g, '%27')) + '\')"' : '') + '>' + (mpl.image ? '' : '♪') + '</span>'   /* v3.84 (B4) */
         + '<span style="flex:1;min-width:0"><b>' + esc(pr.short) + '</b><br><span style="font-size:11.5px;color:var(--dim)">' + esc((profiles[g].name || g)) + '’s own music — one tap</span></span><span style="color:var(--gold2);font-size:18px">▶</span></div>';
     }
     if (m.recents.length) {
@@ -1103,7 +1194,7 @@
     var q = j.queue, cur = q && q.current;
     var playing = q && q.state === 'playing';
     box.innerHTML = '<div class="nowmus">'
-      + '<div class="art"' + (cur && cur.image ? ' style="background-image:url(\'' + cur.image.replace(/'/g, '%27') + '\')"' : '') + '>' + (cur && cur.image ? '' : '♪') + '</div>'
+      + '<div class="art"' + (cur && cur.image ? ' style="background-image:url(\'' + esc(cur.image.replace(/'/g, '%27')) + '\')"' : '') + '>' + (cur && cur.image ? '' : '♪') + '</div>'   /* v3.84 (B4) */
       + '<div style="flex:1;min-width:180px"><div class="tt">' + esc(cur ? cur.name : 'Nothing playing') + '</div>'
       + '<div class="ar">' + esc(cur ? cur.artist : 'Pick a playlist or a song below') + '</div>'
       + (j.hold ? '<span class="hchip">♪ music is overriding the room\u2019s own sounds</span>' : '') + '</div>'
@@ -1190,7 +1281,7 @@
     var m = musMeta(), pins = m.pins;
     function card(pl, i) {
       var pr = plParse(pl.name), on = pins.indexOf(pl.uri) >= 0;
-      return '<div class="plcard" data-pli="' + i + '"><div class="art"' + (pl.image ? ' style="background-image:url(\'' + pl.image.replace(/'/g, '%27') + '\')"' : '') + '>' + (pl.image ? '' : '♪') + '</div>'
+      return '<div class="plcard" data-pli="' + i + '"><div class="art"' + (pl.image ? ' style="background-image:url(\'' + esc(pl.image.replace(/'/g, '%27')) + '\')"' : '') + '>' + (pl.image ? '' : '♪') + '</div>'   /* v3.84 (B4): MA artwork URLs are third-party strings */
         + '<button class="pin' + (on ? ' on' : '') + '" data-pin="' + i + '" title="' + (on ? 'Unpin' : 'Pin to the top') + '">' + (on ? '★' : '☆') + '</button>'
         + '<div class="nm" title="' + esc(pl.name) + '">' + esc(pr.short) + '</div></div>';
     }
@@ -1230,7 +1321,7 @@
       var ts = j.tracks || [];
       box.className = '';
       box.innerHTML = ts.length ? ts.map(function (t, i) {
-        return '<div class="trkrow" data-ti="' + i + '"><div class="ta"' + (t.image ? ' style="background-image:url(\'' + t.image.replace(/'/g, '%27') + '\')"' : '') + '>' + (t.image ? '' : '♪') + '</div>'
+        return '<div class="trkrow" data-ti="' + i + '"><div class="ta"' + (t.image ? ' style="background-image:url(\'' + esc(t.image.replace(/'/g, '%27')) + '\')"' : '') + '>' + (t.image ? '' : '♪') + '</div>'   /* v3.84 (B4) */
           + '<div style="flex:1;min-width:0"><div class="tn">' + esc(t.name) + '</div><div class="tar">' + esc(t.artist) + (t.album ? ' · ' + esc(t.album) : '') + '</div></div><span style="color:var(--gold2)">▶</span></div>';
       }).join('') : '<span class="hint">' + (musTrackQ ? 'Nothing matches.' : 'Your library\u2019s newest songs appear here — or search above.') + '</span>';
       $$('#mustracks [data-ti]').forEach(function (r2) {
@@ -1262,8 +1353,8 @@
       if (!z || !z.ok) return;
       ['chandelier', 'lamps'].forEach(function (zn) {
         var box = $('[data-lzone="' + zn + '"]'); if (!box) return;
-        box.innerHTML = (z.scenes || []).slice(0, 14).map(function (s) { return '<button class="chip" data-lzq="' + zn + '|s|' + s + '">' + s + '</button>'; }).join('')
-          + (z.effects || []).filter(function (ef) { return ef !== 'none'; }).map(function (ef) { return '<button class="chip" style="border-color:var(--gold)" data-lzq="' + zn + '|e|' + ef + '">✨ ' + ef + '</button>'; }).join('')
+        box.innerHTML = (z.scenes || []).slice(0, 14).map(function (s) { return '<button class="chip" data-lzq="' + zn + '|s|' + esc(s) + '">' + esc(s) + '</button>'; }).join('')   /* v3.84 (B2): HA scene + effect names */
+          + (z.effects || []).filter(function (ef) { return ef !== 'none'; }).map(function (ef) { return '<button class="chip" style="border-color:var(--gold)" data-lzq="' + zn + '|e|' + esc(ef) + '">✨ ' + esc(ef) + '</button>'; }).join('')
           + '<button class="chip" data-lzq="' + zn + '|off|1">○ off</button>';
         $$('[data-lzone="' + zn + '"] [data-lzq]').forEach(function (b) {
           b.onclick = function () {
@@ -1707,7 +1798,7 @@
     var bt = (T.bg && T.bg.type) || 'none';
     var bgThumbUrl = (bt !== 'none' && T.bg && T.bg.key) ? sceneThumb(T.bg.key) : '';
     h += '<div class="card"><div class="zt">Background</div><div style="display:flex;gap:10px;align-items:center">'
-      + '<div class="tbgthumb"' + (bgThumbUrl ? ' style="background-image:url(\'' + bgThumbUrl.replace(/'/g, '%27') + '\')"' : '') + '>' + (bgThumbUrl ? '' : '') + '</div>'
+      + '<div class="tbgthumb"' + (bgThumbUrl ? ' style="background-image:url(\'' + esc(bgThumbUrl.replace(/'/g, '%27')) + '\')"' : '') + '>' + (bgThumbUrl ? '' : '') + '</div>'   /* v3.84 (B4) */
       + '<button class="btn" id="tbg" style="flex:1;text-align:left">🖼 ' + (bt === 'none' ? 'None (dark)' : (bt === 'video' ? '▶ ' : '') + esc(niceName(T.bg.key || ''))) + '</button><button class="btn gh" id="tbgclear">Clear</button></div></div>';
     /* v2.76: "Show on" = a little wall map instead of text chips — mirrors the
        Design canvas mental model. Auto mode dims the map (the mode decides). */
@@ -1927,7 +2018,7 @@
   function scAvatar(p, size, i) {
     var PAL = ['#c9a35e', '#5ec8c8', '#73c990', '#e0655f', '#b46cc9', '#e0b04a'];
     var col = (p && p.color) || PAL[(i || 0) % PAL.length];
-    if (p && p.photo) return '<span style="display:inline-block;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:url(\'' + p.photo.replace(/'/g, '%27') + '\') center/cover;flex:none;box-shadow:0 0 0 2px ' + col + '"></span>';
+    if (p && p.photo) return '<span style="display:inline-block;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:url(\'' + esc(p.photo.replace(/'/g, '%27')) + '\') center/cover;flex:none;box-shadow:0 0 0 2px ' + esc(col) + '"></span>';   /* v3.84 (B4) */
     return '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + col + ';color:#14151a;font:700 ' + Math.round(size * 0.44) + 'px sans-serif;flex:none">' + ((p && p.name) || '?').charAt(0).toUpperCase() + '</span>';
   }
   function scAutoTitles() {
@@ -2137,7 +2228,7 @@
           var ph = (r && r.photos) || [];
           if (!ph.length) { $('#pppbody').innerHTML = '<div class="hint" style="padding:16px">Album is empty.</div>'; return; }
           $('#pppbody').innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'
-            + ph.map(function (it, i) { var u = it.url || it; return '<div class="cell" data-pppp="' + i + '"><img loading="lazy" src="' + photoThumbUrl(u).replace(/'/g, '%27') + '" style="aspect-ratio:1;object-fit:cover"></div>'; }).join('') + '</div>';
+            + ph.map(function (it, i) { var u = it.url || it; return '<div class="cell" data-pppp="' + i + '"><img loading="lazy" src="' + esc(photoThumbUrl(u)) + '" style="aspect-ratio:1;object-fit:cover"></div>'; }).join('') + '</div>';   /* v3.84 (B4): a double-quoted src needs esc(), %27 did nothing here */
           $$('#pppbody [data-pppp]').forEach(function (c) { c.onclick = function () { var it = ph[+c.dataset.pppp]; askDismiss(); done(it.url || it); }; });
         }).catch(function () { $('#pppbody').innerHTML = '<div class="hint" style="padding:16px">Couldn’t read this album.</div>'; });
       }
@@ -2152,7 +2243,7 @@
     var vv = rv && rv.videos ? rv.videos : null;
     if (!vv || !vv.some(function (v) { return !!v; })) { w.style.display = 'none'; return; }
     w.style.display = 'block';
-    $('#revealbar').innerHTML = vv.map(function (v, i) { return v ? '<button class="btn sm" data-rev="' + FRAME_IDS[i] + '">▶ ' + FRAME_IDS[i] + '</button>' : ''; }).join('')
+    $('#revealbar').innerHTML = vv.map(function (v, i) { return v ? '<button class="btn sm" data-rev="' + esc(FRAME_IDS[i]) + '">▶ ' + esc(FRAME_IDS[i]) + '</button>' : ''; }).join('')   /* v3.84 (B3) */
       + '<button class="btn sm" data-rev="all">▶ All frames</button>'
       + (rv.trigger === 'random' ? '<span class="hint" style="margin-left:8px">+ auto ~every ' + rv.everyS + 's</span>' : '');
     $$('#revealbar [data-rev]').forEach(function (b) { b.onclick = function () { post('/api/reveal', { frame: b.dataset.rev }).then(function (j) { toast('Reveal → ' + b.dataset.rev); }); }; });
@@ -2588,7 +2679,7 @@
     w.style.display = social.length ? 'block' : 'none';
     $('#socialbar').innerHTML = social.map(function (b) {
       var mo = kid && b.event && KIDMORPH[b.id];
-      return '<button class="socialbtn" data-soc="' + b.id + '"><span class="ic">' + ((mo && mo.icon) || b.icon || '🎭') + '</span>' + esc((mo && mo.label) || b.label || b.id) + '</button>';
+      return '<button class="socialbtn" data-soc="' + esc(b.id) + '"><span class="ic">' + esc((mo && mo.icon) || b.icon || '🎭') + '</span>' + esc((mo && mo.label) || b.label || b.id) + '</button>';   /* v3.84 (B2): social ids + icons come from /api/social */
     }).join('') + '<button class="socialbtn" data-cue="1"><span class="ic">🃏</span>Cue cards</button>';
     $$('#socialbar [data-soc]').forEach(function (b) {
       b.onclick = function () {
@@ -2600,7 +2691,7 @@
     var cb = $('#socialbar [data-cue]'); if (cb) cb.onclick = openCueSheet;
   }
   function openCueSheet() {
-    var frames = FRAME_IDS.map(function (f) { return '<button class="chip" data-cf="' + f + '">' + f + '</button>'; }).join('');
+    var frames = FRAME_IDS.map(function (f) { return '<button class="chip" data-cf="' + esc(f) + '">' + esc(f) + '</button>'; }).join('');   /* v3.84 (B3) */
     openSheet('<div class="shead"><h2>🃏 Cue cards</h2><div class="sp"></div><button class="btn gh" id="pclose2">Close</button></div><div class="sbody">'
       + '<div class="card"><div class="zt">1 · Pick a deck <span class="hint">(add .txt files to the decks/ folder — one line per item, img: for pictures)</span></div>'
       + '<div class="chips">' + (decks.length ? decks.map(function (d) { return '<button class="chip" data-cd="' + esc(d.id) + '">' + (d.icon || '🃏') + ' ' + esc(d.name) + ' · ' + d.count + '</button>'; }).join('') : '<span class="hint">No decks yet — drop a .txt into the decks/ folder and Rescan</span>') + '</div></div>'
@@ -2739,7 +2830,7 @@
     var socialChips = (social || []).map(function (b) { return momentTile((b.icon || '🎭'), esc(b.label || b.id), 'data-soc="' + esc(b.id) + '"'); }).join('');
     var h = ''
       + '<div style="position:relative;flex:none;height:104px;background:linear-gradient(90deg,' + acc + '55,' + acc + '10)">'
-      +   (poster ? '<div style="position:absolute;inset:0;background:url(\'' + poster.replace(/'/g, '%27') + '\') center/cover;opacity:.22"></div>' : '')
+      +   (poster ? '<div style="position:absolute;inset:0;background:url(\'' + esc(poster.replace(/'/g, '%27')) + '\') center/cover;opacity:.22"></div>' : '')   /* v3.84 (B4) */
       +   '<div style="position:absolute;left:18px;right:14px;bottom:12px;display:flex;align-items:flex-end;gap:12px">'
       +     '<div style="width:54px;height:54px;border-radius:12px;flex:none;background:' + acc + ' center/cover no-repeat' + (poster ? ";background-image:url('" + poster + "')" : '') + ';box-shadow:0 4px 14px rgba(0,0,0,.5)"></div>'
       +     '<div style="flex:1;min-width:0">'
@@ -3345,7 +3436,7 @@
   function stripCard(id) {
     var p = profiles[id], th = sceneThumb(p.scene);
     var isLive = !!(live.state && live.state.game === id);
-    return '<div class="scard' + (id === curId ? ' sel' : '') + (p.hidden ? ' hid' : '') + '" data-id="' + id + '"' + (th ? ' style="background-image:url(\'' + th.replace(/'/g, '%27') + '\')"' : '') + '>'
+    return '<div class="scard' + (id === curId ? ' sel' : '') + (p.hidden ? ' hid' : '') + '" data-id="' + esc(id) + '"' + (th ? ' style="background-image:url(\'' + esc(th.replace(/'/g, '%27')) + '\')"' : '') + '>'   /* v3.84 (B1+B4) */
       + '<div class="shade"></div>' + (p.hidden ? '<span class="hidtag">hidden</span>' : '') + (isLive ? '<span class="livetag">LIVE</span>' : '')
       + '<div class="nm">' + esc(p.name || id) + '</div></div>';
   }
@@ -3569,7 +3660,7 @@
         var fidx = FRAME_IDS.indexOf(fid); if (fidx < 0) return;
         (function (i) {
         var fr = D.createElement('div'); fr.className = 'fr'; fr.dataset.fi = i; fr.draggable = true;
-        fr.innerHTML = '<div class="badge">' + FRAME_IDS[i] + ' <i></i><em title="Effect layer active" style="display:none;font-style:normal;color:var(--teal)">≋</em></div><div class="inner"></div>';
+        fr.innerHTML = '<div class="badge">' + esc(FRAME_IDS[i]) + ' <i></i><em title="Effect layer active" style="display:none;font-style:normal;color:var(--teal)">≋</em></div><div class="inner"></div>';
         host.appendChild(fr);
         fr.addEventListener('click', function (e) {
           var i2 = +fr.dataset.fi;
@@ -3711,7 +3802,7 @@
       + '<div class="hint" style="margin-top:16px;line-height:1.6">Name, colour and lighting live in the header above the wall.<br>🔊 Sound, ✨ Motion &amp; FX and ☑ Behaviour are tabs of their own.</div>';
   }
   function selChips() {
-    return '<div class="selchips">' + FRAME_IDS.map(function (f, i) { return '<button class="chip' + (sel.indexOf(i) >= 0 ? ' on' : '') + '" data-selc="' + i + '">' + f + '</button>'; }).join('') + '</div>';
+    return '<div class="selchips">' + FRAME_IDS.map(function (f, i) { return '<button class="chip' + (sel.indexOf(i) >= 0 ? ' on' : '') + '" data-selc="' + i + '">' + esc(f) + '</button>'; }).join('') + '</div>';   /* v3.84 (B3) */
   }
   function T(t) { return '<i class="tip" tabindex="0" data-tip="' + esc(t) + '">?</i>'; }
   /* v1.81 floating tooltip — escapes scroll containers, clamps to the viewport */
@@ -3760,7 +3851,7 @@
       + '<div class="r2" style="margin-top:6px"><label class="fld"><span>Order</span><select data-pl="order">' + opt([{ v: 'sequence', l: 'In order' }, { v: 'shuffle', l: 'Shuffle' }], pl.order || 'sequence') + '</select></label>'
       + '<label class="fld"><span>Volume %</span><input type="number" data-pl="gain" min="0" max="100" value="' + Math.round((pl.gain != null ? pl.gain : 0.5) * 100) + '"></label></div>'
       + '<div class="fld" style="margin-top:6px"><span>Plays on' + T('Which TVs carry the playlist. None selected = all TVs (diffuse). Select a few for clean music without phasing.') + '</span><div class="row" style="gap:5px" id="plframes">'
-      + FRAME_IDS.map(function (f) { var on = pl.frames && pl.frames.indexOf(f) >= 0; return '<button class="btn sm' + (on ? '' : ' gh') + '" data-plf="' + f + '">' + f + '</button>'; }).join('') + '</div></div>';
+      + FRAME_IDS.map(function (f) { var on = pl.frames && pl.frames.indexOf(f) >= 0; return '<button class="btn sm' + (on ? '' : ' gh') + '" data-plf="' + esc(f) + '">' + esc(f) + '</button>'; }).join('') + '</div></div>';   /* v3.84 (B3) */
     h += '<div class="zt" style="margin-top:12px">Intro — on entering the mode' + T('A one-shot flourish when the mode starts (trumpets, a gong…).') + '</div>'
       + '<div class="r3"><label class="fld"><span>Sound</span><select data-ai="sound">' + sndOpts(intro.sound) + '</select></label>'
       + '<label class="fld"><span>Where</span><select data-ai="spatial">' + spOpts(intro.spatial || 'all') + '</select></label>'
@@ -3808,7 +3899,7 @@
       + '<div class="r2" style="margin-top:10px"><label class="fld"><span>Order</span><select data-pl="order">' + opt([{ v: 'sequence', l: 'In order' }, { v: 'shuffle', l: 'Shuffle' }], pl.order || 'sequence') + '</select></label>'
       + '<label class="fld"><span>Volume %</span><input type="number" data-pl="gain" min="0" max="100" value="' + Math.round((pl.gain != null ? pl.gain : 0.5) * 100) + '"></label></div>'
       + '<div class="fld" style="margin:4px 0 0"><span>Plays on' + T('Which TVs carry the playlist — badges on the wall above show where the music lives.') + '</span><div style="display:flex;gap:5px;flex-wrap:wrap" id="plframes">'
-      + FRAME_IDS.map(function (fid) { var on = pl.frames && pl.frames.indexOf(fid) >= 0; return '<button class="btn sm' + (on ? '' : ' gh') + '" data-plf="' + fid + '">' + fid + '</button>'; }).join('') + '</div></div></div>';
+      + FRAME_IDS.map(function (fid) { var on = pl.frames && pl.frames.indexOf(fid) >= 0; return '<button class="btn sm' + (on ? '' : ' gh') + '" data-plf="' + esc(fid) + '">' + esc(fid) + '</button>'; }).join('') + '</div></div></div>';   /* v3.84 (B3) */
     h += '<div class="card"><div class="zt">🔔 Entrance & exit' + T('One-shot flourishes when the mode starts (trumpets, a gong…) and when it ends.') + '</div>'
       + '<div class="r3"><label class="fld"><span>Entry sound</span><select data-ai="sound">' + sndOpts(intro.sound) + '</select></label>'
       + '<label class="fld"><span>Where</span><select data-ai="spatial">' + spOpts(intro.spatial || 'all') + '</select></label>'
@@ -4204,7 +4295,7 @@
       if (c.event === 'blackout') h += '<label class="fld" style="margin-top:4px"><span>Hold s — blank = until launch</span><input type="number" data-inc="' + i + '|msS" min="0.5" step="0.5" value="' + (c.ms ? (c.ms / 1000) : '') + '"></label>';
     } else if (c.type === 'frames') {
       h = '<button class="btn sm" data-inpick="' + i + '" style="width:100%;text-align:left">🖼 ' + esc(c.scene ? niceName(c.scene) : 'Choose the title image / video…') + '</button>'
-        + '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">' + FRAME_IDS.map(function (f) { return '<button class="chip' + ((c.frames || []).indexOf(f) >= 0 ? ' on' : '') + '" data-infrm="' + i + '|' + f + '">' + f + '</button>'; }).join('') + '</div>'
+        + '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">' + FRAME_IDS.map(function (f) { return '<button class="chip' + ((c.frames || []).indexOf(f) >= 0 ? ' on' : '') + '" data-infrm="' + i + '|' + esc(f) + '">' + esc(f) + '</button>'; }).join('')   /* v3.84 (B3) */ + '</div>'
         + '<label class="fld" style="margin-top:4px"><span>Hold s — blank = until launch</span><input type="number" data-inc="' + i + '|msS" min="0.5" step="0.5" value="' + (c.ms ? (c.ms / 1000) : '') + '"></label>';
     }
     else if (c.type === 'lights') {
@@ -4761,7 +4852,7 @@
       var mid = (r.months || {})[String(i + 1)] || '';
       var th = mid && profiles[mid] ? sceneThumb(profiles[mid].scene) : '';
       var dots = ((r.days || []).filter(function (d) { return d.when && d.when.slice(-5, -3) === String(i + 1).padStart(2, '0'); }) || []).slice(0, 4);
-      return '<div class="calmon' + (i === nowM ? ' now' : '') + '" data-cm="' + (i + 1) + '"' + (th ? ' style="background-image:url(\'' + th.replace(/'/g, '%27') + '\')"' : '') + '>'
+      return '<div class="calmon' + (i === nowM ? ' now' : '') + '" data-cm="' + (i + 1) + '"' + (th ? ' style="background-image:url(\'' + esc(th.replace(/'/g, '%27')) + '\')"' : '') + '>'   /* v3.84 (B4) */
         + '<div class="sh"></div><div class="mn">' + m + '</div>'
         + '<div class="dots">' + dots.map(function () { return '<i></i>'; }).join('') + '</div>'
         + '<div class="md">' + esc(modeName(mid)) + '</div></div>';
@@ -5082,7 +5173,12 @@
       }).join('');
       $$('#themesSheet [data-thmiss]').forEach(function (b) {
         b.onclick = function () {
-          var l = $('#themesSheet [data-thmisslist="' + b.dataset.thmiss + '"]');
+          /* v3.84 (RS-SEC v1.02, C8): a pack id was interpolated straight into
+             a CSS selector — an id carrying a quote or a bracket threw
+             SyntaxError and the ⚠ missing-files list simply never opened.
+             Match on the dataset value instead of building a selector. */
+          var want = b.dataset.thmiss;
+          var l = $$('#themesSheet [data-thmisslist]').filter(function (x) { return x.dataset.thmisslist === want; })[0];
           if (l) l.style.display = l.style.display === 'none' ? '' : 'none';
         };
       });
@@ -5091,22 +5187,44 @@
       if (el) el.innerHTML = '<div class="hint">Could not load theme packs — ' + esc((e && e.message) || 'no response') + '</div>';
     });
   }
+  /* v3.84 (RS-SEC v1.02, C9): two problems. r.json() was unconditional, so a
+     reverse proxy's HTML 502/413 page (the likeliest failure for a multi-MB
+     zip) rejected inside the promise and surfaced as the cryptic parser error
+     instead of the status; and nothing stopped a second Import while the first
+     was still uploading, which raced two writes of the same pack id. Read the
+     body as text, try to parse, report honestly — and hold the control shut
+     for the duration. */
+  var _thzBusy = false;
+  function thzLock(on) {
+    _thzBusy = on;
+    /* the two doors onto the same hidden #themesImport input: the theme
+       sheet's ⇪ Import theme… and the wizard's step-5 copy */
+    ['#thimport', '#wzthimport', '#themesImport'].forEach(function (selr) {
+      var el = $(selr); if (!el) return;
+      try { el.disabled = on; } catch (e) {}
+      if (el.style) el.style.opacity = on ? '.55' : '';
+    });
+  }
   function sendThemeZip(f, overwrite) {
+    if (_thzBusy) { toast('An import is already running…'); return; }
+    thzLock(true);
     toast('⇪ Importing “' + f.name + '”…');
     fetch('/api/theme/import' + (overwrite ? '?overwrite=1' : ''), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: f })
-      .then(function (r) { return r.json().then(function (j) { return { code: r.status, j: j }; }); })
+      .then(function (r) { return r.text().then(function (t) { var j = null; try { j = JSON.parse(t); } catch (e) {} return { code: r.status, j: j, text: t }; }); })
       .then(function (res) {
+        thzLock(false);
         if (res.code === 409) {
           askConfirm('Pack exists — replace?', 'A pack with this id is already installed. Replacing keeps the old copy in themes/.trash — nothing is deleted.', 'Replace', function () { sendThemeZip(f, true); });
           return;
         }
-        if (!res.j || !res.j.ok) { toast('Import failed — ' + ((res.j && res.j.error) || ('HTTP ' + res.code))); return; }
+        if (!res.j) { toast('Import failed — HTTP ' + res.code + ' (the server answered ' + (res.text ? 'a non-JSON page' : 'nothing') + ')'); return; }
+        if (!res.j.ok) { toast('Import failed — ' + (res.j.error || ('HTTP ' + res.code))); return; }
         var miss = (res.j.missing || []).length;
         toast('🧩 Imported ' + (res.j.pack || f.name) + (res.j.replaced ? ' (old copy in .trash)' : '') + (miss ? ' — ⚠ ' + miss + ' file(s) missing' : ' ✓'));
         paintThemesSheet();
         reloadProfilesLight();
       })
-      .catch(function (e) { toast('Import failed — ' + ((e && e.message) || e)); });
+      .catch(function (e) { thzLock(false); toast('Import failed — ' + ((e && e.message) || e)); });
   }
 
   /* ================= 🚀 First-run wizard (Phase 4b, RS-WIZARD) =================
@@ -5150,12 +5268,20 @@
   }
   /* Adopt a layout the conductor just re-derived (the /api/config response
      carries it) — the boot() adoption, minus the full re-boot. */
-  function wizAdoptLayout(lj) {
+  /* v3.84 (RS-SEC v1.02, C1+C7): this used to KEEP the old roles whenever the
+     server response carried none — but the wizard's whole job at that moment
+     is to change the layout, so the stale roles pointed at frames that no
+     longer exist and every role-targeted feature (TTS, cue cards, sweeps,
+     the guesser) aimed at a dead frame until the next full boot. Derive them,
+     exactly as boot() does, via the one shared predicate. */
+  function wizAdoptLayout(raw) {
+    var lj = IE.adoptLayoutPayload ? IE.adoptLayoutPayload(raw) : raw;
     if (!lj || !Array.isArray(lj.frames) || !lj.frames.length) return;
     layout.frames = lj.frames.slice();
-    layout.walls = (lj.walls && Object.keys(lj.walls).length) ? lj.walls : layout.walls;
-    layout.roles = (lj.roles && lj.roles.primary) ? lj.roles : layout.roles;
+    layout.walls = lj.walls || layout.walls;
+    layout.roles = lj.roles || (IE.deriveRoles ? IE.deriveRoles(layout.walls, layout.frames) : layout.roles);
     layout.atRest = lj.atRest || layout.atRest;
+    layout.orientation = lj.orientation || layout.orientation;
     FRAME_IDS = layout.frames;
     window.__rsLayout = layout;
     if (IE.setLayout) IE.setLayout(layout);
@@ -5193,12 +5319,21 @@
     var last = wiz.step === WIZ_STEPS.length - 1;
     var bb = $('#wzback'); if (bb) bb.onclick = function () { if (wiz.step > 0) { wiz.step--; wizPaint(); } };
     var sb = $('#wzskip'); if (sb) sb.onclick = function () { if (last) wizFinish(); else { wiz.step++; wizPaint(); } };
+    /* v3.84 (RS-SEC v1.02, C3): the save is async and the button stayed live
+       throughout — a second tap (easy on a tablet, and the admin-token prompt
+       makes the first one look ignored) fired saveFn twice, so the wizard
+       skipped a step or "finished" twice. Disable for the duration; re-enable
+       on BOTH branches, and only if the button is still on screen. */
     var nb = $('#wznext'); if (nb) nb.onclick = function () {
+      if (nb.disabled) return;
       var p = null;
       try { p = saveFn ? saveFn() : null; } catch (e) { toast('Hmm — ' + (e.message || e)); return; }
+      nb.disabled = true; nb.style.opacity = '.55';
+      function done() { if (nb && nb.isConnected) { nb.disabled = false; nb.style.opacity = ''; } }
       Promise.resolve(p).then(function () {
+        done();
         if (last) wizFinish(); else { wiz.step++; wizPaint(); }
-      }).catch(function (e) { toast('Couldn’t save — ' + ((e && e.message) || 'no response')); });
+      }).catch(function (e) { done(); toast('Couldn’t save — ' + ((e && e.message) || 'no response')); });
     };
   }
   function wizFinish() {
@@ -5254,11 +5389,27 @@
           for (var k = 1; k <= wiz.count - nL; k++) walls.R.push('R' + k);
           if (!walls.R.length) delete walls.R;
         } else {
+          /* v3.84 (RS-SEC v1.02, B3): the Custom-walls textarea is the one place
+             a human types frame ids by hand, and they end up as object keys,
+             DOM ids, ?frame= query values and WS routing keys. Two real bugs:
+             a line reading "__proto__: a, b" set the walls object's PROTOTYPE
+             instead of a wall (Object.create(null) kills that), and anything at
+             all was accepted as an id — including markup, spaces and duplicates
+             — which the conductor then rejects with a 400 the wizard shows as a
+             generic failure. Validate here, with the friendly message. */
+          walls = Object.create(null);
           wiz.custom = $('#wzcustom').value || '';
+          var FID_RE = /^[A-Za-z0-9_-]{1,12}$/, seenIds = Object.create(null);   // '__proto__' PASSES the regex — a plain {} would read a truthy inherited value and cry duplicate
           wiz.custom.split('\n').forEach(function (line) {
             var m = line.split(':'); if (m.length < 2) return;
             var key = m[0].trim(); if (!key) return;
+            if (!FID_RE.test(key)) throw new Error('“' + key + '” isn’t a usable wall name — letters, numbers, _ and - only (max 12)');
             var ids2 = m.slice(1).join(':').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+            ids2.forEach(function (fid2) {
+              if (!FID_RE.test(fid2)) throw new Error('“' + fid2 + '” isn’t a usable frame id — letters, numbers, _ and - only (max 12)');
+              if (seenIds[fid2]) throw new Error('“' + fid2 + '” is listed twice — every frame id must be unique');
+              seenIds[fid2] = 1;
+            });
             if (ids2.length) walls[key] = ids2;
           });
           if (!Object.keys(walls).length) throw new Error('give each wall a line like “L: L1, L2, L3”');
@@ -5628,8 +5779,8 @@
   function openPicker(){
     var fi=FRAMES_().indexOf(state.frame);
     var grid = (state.scenes||[]).map(function(s,i){ return '<div data-pick="'+i+'" style="width:120px;flex:none;cursor:pointer">'+
-        '<div style="width:120px;height:120px;border-radius:10px;border:1px solid '+LINE+';background:#0c0c10 center/cover url(\''+(s.thumb||'').replace(/'/g,'%27')+'\');"></div>'+
-        '<div style="font:11px system-ui;color:'+FAINT+';margin-top:4px;height:28px;overflow:hidden;line-height:1.2">'+s.key+'</div></div>'; }).join('');
+        '<div style="width:120px;height:120px;border-radius:10px;border:1px solid '+LINE+';background:#0c0c10 center/cover url(\''+IE.escAttr((s.thumb||'').replace(/'/g,'%27'))+'\');"></div>'+   /* v3.84 (B4): this block has no local esc — use the shared IE.escAttr */
+        '<div style="font:11px system-ui;color:'+FAINT+';margin-top:4px;height:28px;overflow:hidden;line-height:1.2">'+IE.escAttr(s.key)+'</div></div>'; }).join('');
     var pk = el('div','position:fixed;inset:0;background:rgba(6,6,9,.85);z-index:100001;display:flex;align-items:center;justify-content:center');
     var box = el('div','width:min(860px,94vw);max-height:86vh;overflow-y:auto;overflow-x:hidden;background:'+PANEL+';border:1px solid '+LINE+';border-radius:16px;padding:18px;color:'+INK);
     box.innerHTML='<div style="display:flex;align-items:center"><div style="font:700 15px system-ui">Add a clip to '+state.frame+'</div><button id="pkX" style="margin-left:auto;background:none;border:1px solid '+LINE+';color:'+INK+';border-radius:8px;padding:6px 10px;cursor:pointer">✕</button></div>'+
@@ -6059,7 +6210,10 @@
 
   function doRefresh(){
     banner('Refreshing library...');
-    var p = (typeof window.__rsRefresh==='function') ? window.__rsRefresh() : api('/api/rescan',{});
+    /* v3.84 (RS-SEC v1.02, A2): api('/api/rescan',{}) is a GET — and /api/rescan
+       is one of the mutating-GET paths the conductor now token-gates, so this
+       fallback 401'd. POST it (the handler takes any verb). */
+    var p = (typeof window.__rsRefresh==='function') ? window.__rsRefresh() : api('/api/rescan',{method:'POST'});
     Promise.resolve(p).then(function(){ ensureIndex(true); banner('Library refreshed.','ok'); }).catch(function(){ banner('Refresh failed.','err'); });
   }
 
@@ -7212,9 +7366,9 @@
   var SP_LABEL={all:'All TVs',random:'Random TV',sweep:'Sweep L→R',sweeprev:'Sweep R→L'};
   var search='', selDir='', menuFor=null, lastSig='', prevAudio=null, prevKey='', moreDirs=false;
   var vizCfg=null, vizGame=null;
-  /* Phase 2d: derived from the single engine catalogue — the '(panorama)' suffix
-     this lane used to hand-write now comes from the pan flag. */
-  var VIZ_STYLES=(IE.VIZ_STYLES||[]).map(function(s){ return [s.id, s.label+(s.pan?' (panorama)':'')]; });
+  /* v3.84 (RS-SEC v1.02, C13): the Sound Studio's private VIZ_STYLES copy was
+     dead — this block never reads it; the live one is the main IIFE's copy at
+     the top of the file (used by the 🎶 viz inspector). Removed. */
   function curModeId(){ var el=$('.scard.sel[data-id]'); return el?el.dataset.id:null; }
   function fetchViz(){
     var id=curModeId(); vizGame=id;

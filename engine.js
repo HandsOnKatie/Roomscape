@@ -1,5 +1,25 @@
 /* ===================================================================
-   The Immersion Engine — shared core (engine.js)  v0.91
+   The Immersion Engine — shared core (engine.js)  v0.92
+   (v0.92 RS-SEC v1.02 — frontend security + bug pass:
+     A1 createBus gained reconnect(url): the socket URL is mutable so the
+        control app can re-dial WITH ?token=<admin token> the moment the
+        operator supplies one (the conductor now refuses state pushes from
+        tokenless sockets). Frames never publish and stay tokenless.
+     B7 escAttr() — every media URL pasted into a style="…url('…')" or an
+        src attribute by renderFrame / the viz+playlist panels is
+        attribute-escaped; those URLs come from WS-pushed state, i.e. from
+        filenames on the media share or a downloaded theme pack.
+     B8 the postMessage origin check accepts ''/'null' ONLY when this page is
+        itself running from file:// — an opaque-origin iframe over HTTP also
+        reports 'null' and used to be trusted unconditionally.
+     C2 wallFramesOf/slotOf/wallSizeOf/wallKeyOf no longer throw (or measure a
+        string's length) when a wall value isn't an array — that was a black
+        TV; they degrade to a wall of one.
+     C7 IE.adoptLayoutPayload(lj) — ONE layout-adoption predicate shared by
+        app.js boot, the wizard and frame.html (three divergent copies before).
+     C11 the standalone control deck's API calls are absolute ('/api/…') and
+        carry the admin token from localStorage — app.js, and its RS-AUTH
+        fetch wrapper, are not loaded on that page.)
    (v0.91 Phase 4a: RS-AUTH — the message-bus 'message' listener accepts only
    same-origin postMessage [plus ''/'null' so file:// wall-test dev keeps
    working]; postEverywhere targets location.origin instead of '*' whenever a
@@ -71,19 +91,46 @@
     frames.forEach(function (f) { FRAME_IDS.push(f); });
     LAYOUT.roles = (l.roles && l.roles.primary) ? l.roles : deriveRoles(LAYOUT.walls, FRAME_IDS);   /* Phase 2c: server roles win, else derive */
   }
+  /* v0.92 (RS-SEC v1.02, C2): a wall whose value isn't an array (hand-edited
+     config.json, a hostile /api/config body that slipped a scalar through, an
+     older conductor) used to THROW inside wallFramesOf (….map is not a
+     function) — which killed renderFrame and left the TV black — while
+     wallSizeOf silently returned a STRING's length. One accessor, always an
+     array, so every consumer degrades to "a wall of one" instead. */
+  function wallArr(k) { var w = LAYOUT.walls && LAYOUT.walls[k]; return Array.isArray(w) ? w : []; }
   function wallKeyOf(idx) {
-    var f = FRAME_IDS[idx], ks = Object.keys(LAYOUT.walls);
-    for (var i = 0; i < ks.length; i++) if (LAYOUT.walls[ks[i]].indexOf(f) >= 0) return ks[i];
+    var f = FRAME_IDS[idx], ks = Object.keys(LAYOUT.walls || {});
+    for (var i = 0; i < ks.length; i++) if (wallArr(ks[i]).indexOf(f) >= 0) return ks[i];
     return ks[0] || 'L';
   }
   function wallFramesOf(idx) {   // indices (into FRAME_IDS) of every frame on idx's wall, in wall order
-    return (LAYOUT.walls[wallKeyOf(idx)] || []).map(function (f) { return FRAME_IDS.indexOf(f); }).filter(function (x) { return x >= 0; });
+    return wallArr(wallKeyOf(idx)).map(function (f) { return FRAME_IDS.indexOf(f); }).filter(function (x) { return x >= 0; });
   }
   function slotOf(idx) {         // 0-based position of idx within its own wall
-    var s = (LAYOUT.walls[wallKeyOf(idx)] || []).indexOf(FRAME_IDS[idx]);
+    var s = wallArr(wallKeyOf(idx)).indexOf(FRAME_IDS[idx]);
     return s < 0 ? 0 : s;
   }
-  function wallSizeOf(idx) { return (LAYOUT.walls[wallKeyOf(idx)] || []).length || 1; }
+  function wallSizeOf(idx) { return wallArr(wallKeyOf(idx)).length || 1; }
+  /* v0.92 (RS-SEC v1.02, C7): ONE layout-adoption predicate. app.js boot
+     required lj.ok, frame.html and the wizard's wizAdoptLayout didn't — three
+     copies, three answers. GET /api/layout always answers {ok:true,…}; the
+     layout sub-object inside a POST /api/config reply carries no ok at all, so
+     the unified rule is "reject only an explicit ok:false". Returns a
+     normalised {frames,walls,roles,atRest,orientation} or null. */
+  function adoptLayoutPayload(lj) {
+    if (!lj || lj.ok === false) return null;
+    if (!Array.isArray(lj.frames) || !lj.frames.length) return null;
+    var frames = lj.frames.slice();
+    var walls = (lj.walls && typeof lj.walls === 'object' && !Array.isArray(lj.walls) && Object.keys(lj.walls).length)
+      ? lj.walls : _wallsFromFrames(frames);
+    return {
+      frames: frames,
+      walls: walls,
+      roles: (lj.roles && lj.roles.primary) ? lj.roles : deriveRoles(walls, frames),
+      atRest: lj.atRest || null,
+      orientation: lj.orientation || null
+    };
+  }
   /* Phase 2d: the single frame-kind registry. Array order = the legacy deck's
      click-cycle order; appOrder = the Design app inspector's historical tile
      order (pano, portrait, photos, viz, playlist, score, map, clock, off).
@@ -365,6 +412,17 @@
 
   /* -------------------- FRAME RENDERING -------------------- */
   function frameIndex(id) { return FRAME_IDS.indexOf((id || 'L1').toUpperCase()); }
+  /* v0.92 (RS-SEC v1.02, B7): every media URL rendered below arrives inside a
+     WS-pushed state object (state.frameImages, cfg.bgUrl, …) whose ultimate
+     source is a filename on the media share or a theme pack someone
+     downloaded. A single-quote or double-quote in that name used to close the
+     style="…" / url('…') it is pasted into and let the rest of the name become
+     markup. attribute-escape everything that lands in an attribute. */
+  function escAttr(s) {
+    return (s == null ? '' : ('' + s)).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
 
   function renderFrame(container, frameId, state) {
     ensureStyles();
@@ -383,7 +441,7 @@
         inner += panelMissing(mref);
       } else if (img) {
         // one wide image stretched across this wall's N frames; each frame shows its slice
-        inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background-image:url(\'' + img + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';
+        inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background-image:url(\'' + escAttr(img) + '\');background-size:100% 100%;background-repeat:no-repeat"></div>';   /* v0.92 (B7) */
       } else {
         inner += '<div class="ie-pano" style="' + pw + 'left:' + (-col * 100) + '%;background:' + g.pano + '"></div>';
         inner += '<div class="ie-glyph">' + g.glyph + '</div>';
@@ -401,7 +459,7 @@
       if (mref) {
         inner += panelMissing(mref);   /* v0.90 (Phase 3c) */
       } else if (img) {
-        inner += '<div class="ie-pano" style="left:0;width:100%;background-image:url(\'' + img + '\');background-size:cover;background-position:center"></div>';
+        inner += '<div class="ie-pano" style="left:0;width:100%;background-image:url(\'' + escAttr(img) + '\');background-size:cover;background-position:center"></div>';   /* v0.92 (B7) */
         if (state.captions) inner += '<div class="ie-cap">' + g.desc + '</div>';
       } else {
         inner += panelPortrait(g);
@@ -478,7 +536,7 @@
      audio-reactive art is drawn on the TVs by fx.js RS-MUSIC-VIZ). */
   function panelViz(g, state, idx) {
     var cfg = (state.frameViz && state.frameViz[idx]) || {};
-    var bg = cfg.bgUrl ? ('background-image:url(\'' + cfg.bgUrl + '\');background-size:cover;background-position:center') : ('background:radial-gradient(120% 90% at 50% 120%,' + g.accent + '22,#0b0c11)');
+    var bg = cfg.bgUrl ? ('background-image:url(\'' + escAttr(cfg.bgUrl) + '\');background-size:cover;background-position:center') : ('background:radial-gradient(120% 90% at 50% 120%,' + escAttr(g.accent) + '22,#0b0c11)');   /* v0.92 (B7) */
     var col = (cfg.color && cfg.color !== 'auto') ? cfg.color : g.accent;
     var bars = '';
     for (var b = 0; b < 9; b++) { var hgt = 20 + Math.round(60 * Math.abs(Math.sin((idx + 1) * 1.7 + b * 0.8))); bars += '<i style="flex:1;background:' + col + ';height:' + hgt + '%;border-radius:2px 2px 0 0;opacity:.9"></i>'; }
@@ -490,7 +548,7 @@
   }
   function panelPlaylist(g, state, idx) {
     var cfg = (state.framePlaylist && state.framePlaylist[idx]) || {};
-    var bg = cfg.bgUrl ? ('background-image:url(\'' + cfg.bgUrl + '\');background-size:cover;background-position:center') : ('background:linear-gradient(160deg,#14161c,#0b0c11)');
+    var bg = cfg.bgUrl ? ('background-image:url(\'' + escAttr(cfg.bgUrl) + '\');background-size:cover;background-position:center') : ('background:linear-gradient(160deg,#14161c,#0b0c11)');   /* v0.92 (B7) */
     var disp = cfg.display || 'nowplaying';
     var col = (cfg.color && cfg.color !== 'auto') ? cfg.color : g.accent;
     return '<div class="ie-pano" style="left:0;width:100%;' + bg + '"></div>'
@@ -519,6 +577,13 @@
     try { bc = new BroadcastChannel(CH); } catch (e) {}
     var ws = null;
     var lastMsgAt = Date.now();   // v0.77: liveness — any inbound WS traffic refreshes this
+    /* v0.92 (RS-SEC v1.02, A1): the socket URL is now MUTABLE. The conductor
+       only lets a socket publish state when the upgrade URL carries
+       ?token=<admin token> (RS-SEC F2), and the app doesn't know the token
+       until the operator types it — so the control app must be able to swap
+       the URL and reconnect without a page reload. Frames never publish and
+       stay tokenless. */
+    var wsTarget = opts.ws || null;
     if (opts.ws) {
       // auto-reconnect with capped exponential backoff, so frames survive
       // a Conductor restart / NAS reboot without a kiosk restart.
@@ -526,7 +591,7 @@
       // some runtimes fire only 'error' when a reconnect attempt fails.
       (function connect(delay) {
         var sock;
-        try { sock = ws = new WebSocket(opts.ws); }
+        try { sock = ws = new WebSocket(wsTarget); }
         catch (e) {
           // v0.77: constructor throw must NOT kill the reconnect loop — this was
           // the one exit that never re-armed retry (permanent no-WS until reload).
@@ -607,10 +672,16 @@
       /* RS-AUTH v1 (Phase 4a): only same-origin peers may drive the engine bus
          (a hostile page could otherwise postMessage state/audio commands into
          an open app tab). Pages opened from disk (wall-test dev) report origin
-         '' or 'null' — keep that path working. */
+         '' or 'null'.
+         v0.92 (RS-SEC v1.02, B8): that escape hatch used to be unconditional —
+         and a sandboxed iframe / an opaque-origin document served over HTTP
+         also posts with origin 'null', so any page that could get a handle on
+         this window could drive the room. Accept the blank origins ONLY when
+         we are ourselves running from disk. */
       var o = e.origin || '';
-      if (o !== '' && o !== 'null' && o !== location.origin) return;
-      handle(e.data);
+      var diskDev = (location.protocol === 'file:');
+      if (o === location.origin) { handle(e.data); return; }
+      if (diskDev && (o === '' || o === 'null')) { handle(e.data); return; }
     });
     window.addEventListener('storage', function (e) {
       if (e.key === CH + ':state' && e.newValue) { try { emit(JSON.parse(e.newValue)); } catch (_) {} }
@@ -636,7 +707,18 @@
       postEverywhere({ ie: true, type: 'hello' });
       try { var s = localStorage.getItem(CH + ':state'); if (s) emit(JSON.parse(s)); } catch (_) {}
     }
-    return { publish: publish, onState: onState, requestState: requestState, _role: role };
+    /* v0.92 (RS-SEC v1.02, A1): point the socket at a new URL and re-dial.
+       Closing the live socket drops into the normal retry/backoff loop, which
+       reads wsTarget again — so no second connect() is started here. If we are
+       ALREADY between retries (ws === null) the pending timer picks up the new
+       target on its own. Returns false when this bus has no socket at all. */
+    function reconnect(url) {
+      if (!wsTarget) return false;
+      if (url) wsTarget = url;
+      try { if (ws) ws.close(); } catch (_) {}
+      return true;
+    }
+    return { publish: publish, onState: onState, requestState: requestState, reconnect: reconnect, _role: role };
   }
 
   /* -------------------- TOASTS -------------------- */
@@ -655,6 +737,23 @@
     ensureStyles();
     var state = defaultState();
     onChange = onChange || function () {};
+    /* v0.92 (RS-SEC v1.02, C11): the legacy deck is a STANDALONE page — app.js
+       (and therefore the RS-AUTH fetch wrapper that carries x-rs-token) is
+       never loaded here. Every call below used a PATH-RELATIVE url ('api/…'),
+       which breaks the moment the deck is served from anything but the web
+       root, and none of them carried the admin token, so every mutation
+       (reload / restart / HA service / light scene) silently 401'd after the
+       Phase 4a gate landed. One helper: absolute path + token on mutations. */
+    function deckTok() { try { return localStorage.getItem('rs-admin-token') || ''; } catch (e) { return ''; } }
+    function deckFetch(p, init) {
+      init = init || {};
+      var m = String(init.method || 'GET').toUpperCase();
+      if (m !== 'GET' && m !== 'HEAD') {
+        var t = deckTok();
+        if (t) { init = Object.assign({}, init); init.headers = Object.assign({}, init.headers || {}); init.headers['x-rs-token'] = t; }
+      }
+      return fetch('/' + String(p).replace(/^\/+/, ''), init);
+    }
 
     container.classList.add('ie-ctl');
     container.innerHTML = ''
@@ -813,8 +912,8 @@
     (function hydrateGames() {
       if (location.protocol === 'file:') return;
       Promise.all([
-        fetch('api/profiles').then(function (r) { return r.json(); }),
-        fetch('api/scenes').then(function (r) { return r.json(); })
+        deckFetch('api/profiles').then(function (r) { return r.json(); }),
+        deckFetch('api/scenes').then(function (r) { return r.json(); })
       ]).then(function (res) {
         var profs = (res[0] && res[0].profiles) || {}, byKey = {};
         ((res[1] && res[1].scenes) || []).forEach(function (s) { byKey[s.key] = s; });
@@ -843,14 +942,14 @@
     var roomBox = q('[data-roomwrap]');
     var roomCfg = null;
     function haSvc(domain, service, data) {
-      fetch('api/ha/service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: domain, service: service, data: data }) })
+      deckFetch('api/ha/service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ domain: domain, service: service, data: data }) })
         .then(function (r) { return r.json(); })
         .then(function (j) { if (!j.ok) toast('HA: ' + (j.error || 'call failed')); setTimeout(loadRoom, 800); })
         .catch(function () { toast('Conductor unreachable'); });
     }
     function loadRoom() {
       if (!roomBox) return;
-      fetch('api/ha/room').then(function (r) { return r.json(); })
+      deckFetch('api/ha/room').then(function (r) { return r.json(); })
         .then(function (j) { roomCfg = j; renderRoom(); })
         .catch(function () { roomBox.innerHTML = '<div class="ie-roomnote">Room controls need the Conductor — open this panel from it (e.g. http://&lt;your-server&gt;:8090/?ws=auto).</div>'; });
     }
@@ -905,7 +1004,7 @@
         var el;
         if ((el = e.target.closest('[data-hareload]'))) {
           var fr = el.dataset.hareload;
-          fetch('api/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: fr }) })
+          deckFetch('api/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: fr }) })
             .then(function (r) { return r.json(); })
             .then(function (j2) { toast(j2.ok ? ('↻ Reload sent to ' + fr + ' — ' + j2.clients + ' client(s) connected') : 'Reload failed'); })
             .catch(function () { toast('Conductor unreachable'); });
@@ -913,7 +1012,7 @@
         }
         if ((el = e.target.closest('[data-harestart]'))) {
           if (!global.confirm('Restart the Conductor? Frames reconnect automatically in ~10-30 s.')) return;
-          fetch('api/restart', { method: 'POST' })
+          deckFetch('api/restart', { method: 'POST' })
             .then(function () { toast('⟳ Conductor restarting — back shortly'); setTimeout(loadRoom, 12000); })
             .catch(function () { toast('Conductor unreachable'); });
           return;
@@ -931,7 +1030,7 @@
         if ((el = e.target.closest('[data-halight]'))) { haSvc('light', el.dataset.halight === 'on' ? 'turn_on' : 'turn_off', { entity_id: roomCfg.lights }); return; }
         if ((el = e.target.closest('[data-hascene]'))) {
           var sc = el.dataset.hascene;
-          fetch('api/ha/lightscene', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scene: sc }) })
+          deckFetch('api/ha/lightscene', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scene: sc }) })
             .then(function (r) { return r.json(); })
             .then(function (jj) { toast(jj.ok ? 'Lights: ' + sc : 'HA: ' + (jj.error || 'failed')); setTimeout(loadRoom, 800); })
             .catch(function () { toast('Conductor unreachable'); });
@@ -976,6 +1075,7 @@
     FRAME_IDS: FRAME_IDS, LAYOUT: LAYOUT, setLayout: setLayout,   /* v0.78 */
     wallKeyOf: wallKeyOf, wallFramesOf: wallFramesOf, slotOf: slotOf, wallSizeOf: wallSizeOf,
     ATREST: ATREST, deriveRoles: deriveRoles, roleFrames: roleFrames,   /* Phase 2c (IE.ATREST is refreshed by setLayout) */
+    adoptLayoutPayload: adoptLayoutPayload, escAttr: escAttr,   /* v0.92 (RS-SEC v1.02): C7 single adoption predicate, B7 attribute escape */
     KINDS: KINDS, FRAMEKINDS: FRAMEKINDS, KIND_ICON: KIND_ICON,   /* Phase 2d: KINDS is the registry; FRAMEKINDS/KIND_ICON derived */
     VIZ_STYLES: VIZ_STYLES, PLAYLIST_DISPLAYS: PLAYLIST_DISPLAYS, /* Phase 2d: single style/display catalogues */
     GAMES: GAMES, GAME_ORDER: GAME_ORDER,

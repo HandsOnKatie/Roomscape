@@ -81,7 +81,11 @@ rotate it any time under **⚙ Settings → System → 🔑 Admin token…**.
   message that replaces the whole room state, persists it, rebroadcasts it and
   drives Home Assistant — if it presented the admin token on the handshake URL
   (`ws://…/?token=<token>`). Sockets without it are read-only consumers, which
-  is all a frame kiosk ever needs. Cross-origin WebSocket handshakes are refused
+  is all a frame kiosk ever needs — `frame.html` deliberately connects with no
+  token at all. The Play & Design app appends the token it has stored, and
+  re-dials the socket as soon as you supply one, so the handful of controls that
+  work by publishing state rather than POSTing (master volume, the Design style
+  picker) keep working. Cross-origin WebSocket handshakes are refused
   outright: a browser always sends `Origin`, and it must match `Host`. (Clients
   that send no `Origin` at all — kiosk shells, scripts — are allowed; there is
   nothing to compare.)
@@ -146,8 +150,25 @@ outside the web root, and masks the host `.env` inside the container.
   so a crafted body cannot pollute `Object.prototype` (which, before v1.01,
   could switch the auth gate off process-wide).
 - The in-page message bus (engine.js) accepts `postMessage` only from its own
-  origin, and targets its own origin rather than `*` (file:// dev pages keep
-  working — they have no usable origin).
+  origin, and targets its own origin rather than `*`. The blank `''`/`'null'`
+  origins that `file://` dev pages report are accepted **only when the page is
+  itself running from `file://`** — an opaque-origin iframe served over HTTP
+  reports `'null'` too, and used to be trusted.
+- **Output escaping in the browser.** Everything the interface renders from a
+  name it did not choose — a mode id or filename from a theme pack, a Home
+  Assistant entity or scene name, a Music Assistant track title or artwork URL,
+  a frame id from `config.json`, a cue-card deck entry — is escaped for `&`,
+  `<`, `>`, `"` and `'` before it reaches markup, including inside `style`
+  attributes and `url('…')`. Rules-wall YouTube ids are validated against
+  `/^[A-Za-z0-9_-]{6,20}$/` before they reach an iframe, and the setup wizard
+  validates hand-typed frame ids (`/^[A-Za-z0-9_-]{1,12}$/`, no duplicates).
+  Without this, a downloaded theme pack was a stored-XSS delivery vehicle
+  against the tablet **and the TVs**.
+- **The admin token stays home.** The app's `fetch` wrapper attaches
+  `x-rs-token` only to same-origin requests, so a call to Home Assistant or
+  Music Assistant can never carry it. The standalone pages that do not load
+  `app.js` — `scores.html` and the legacy control deck — read the same token
+  from `localStorage` themselves rather than silently failing.
 
 ## Reporting
 

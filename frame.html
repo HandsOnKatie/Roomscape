@@ -4,6 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>RoomScape Frame</title>
+<!-- RoomScape frame page — v1.3
+     v1.3 (RS-SEC v1.02): B5 full & < > " ' escaping (was & and < only) in both
+     inline lanes; the rules-wall cover image is URL-encoded and the YouTube id
+     is validated against /^[A-Za-z0-9_-]{6,20}$/ before it reaches an iframe
+     src — an unusable id now means "keep showing the scene". C6 a /api/layout
+     reply that lands after the 2s boot race is no longer discarded: if it
+     disagrees with the geometry in force the page reloads (once per session).
+     C7 layout adoption goes through the shared IE.adoptLayoutPayload.
+     C12 '/api/layout' is absolute, and the boot chain has a .catch so a
+     bootstrap failure still boots the frame on defaults instead of a black TV.
+     v1.2: the rules overlay clears after ~15s of failed polls.
+     v1.1: now-playing toast. -->
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   /* a Frame TV is portrait; this fills whatever portrait viewport it is given */
@@ -40,22 +52,60 @@
         document.body.appendChild(s);
       });
     }
+    /* v1.3 (RS-SEC v1.02, C12): '/api/layout', not 'api/layout' — the
+       path-relative form resolves against the page's directory, so a frame
+       served from anything but the web root asked for the wrong URL and ran
+       the fallback geometry forever. */
+    var layFetch = (location.protocol === 'file:')
+      ? Promise.resolve(null)
+      : fetch('/api/layout').then(function (r) { return r.json(); }).catch(function () { return null; });
     var lay = (location.protocol === 'file:')
       ? Promise.resolve(null)
       : Promise.race([
-          fetch('api/layout').then(function (r) { return r.json(); }).catch(function () { return null; }),
+          layFetch,
           new Promise(function (res) { setTimeout(function () { res(null); }, 2000); })
         ]);
     window.__rsFrameBoot = lay.then(function (lj) {
-      if (lj && Array.isArray(lj.frames) && lj.frames.length) {
-        try { IE.setLayout(lj); window.__rsLayout = lj; } catch (e) {}
+      /* v1.3 (RS-SEC v1.02, C7): one shared adoption predicate with app.js. */
+      var L = (window.IE && IE.adoptLayoutPayload) ? IE.adoptLayoutPayload(lj) : lj;
+      if (L && Array.isArray(L.frames) && L.frames.length) {
+        try {
+          IE.setLayout(L); window.__rsLayout = L;
+          try { sessionStorage.removeItem('rs-late-layout-reload'); } catch (e2) {}   // the race was won — re-arm the C6 safety net
+        } catch (e) {}
       }
       return loadScript('fx.js').then(function () { return loadScript('fx-audio.js'); });
     });
+    /* v1.3 (RS-SEC v1.02, C6): a /api/layout reply that arrived AFTER the 2s
+       race used to be dropped on the floor — a conductor that was slow to
+       answer at boot (cold NAS, thumbnail sweep in flight) left this TV
+       rendering the FALLBACK geometry until somebody power-cycled it. Compare
+       the late answer against the geometry actually in force and reload if
+       they disagree: the fetch is warm by then, so the retry wins the race.
+       Guarded to once per tab session so a chronically slow server can never
+       turn this into a reload loop. */
+    if (layFetch) {
+      window.__rsFrameBoot.then(function () { return layFetch; }).then(function (lj) {
+        var L = (window.IE && IE.adoptLayoutPayload) ? IE.adoptLayoutPayload(lj) : null;
+        if (!L || !Array.isArray(L.frames) || !L.frames.length) return;
+        var live = (window.IE && IE.FRAME_IDS) ? IE.FRAME_IDS.join(',') : '';
+        if (live === L.frames.join(',')) return;
+        var once = false; try { once = !!sessionStorage.getItem('rs-late-layout-reload'); } catch (e) {}
+        if (once) { try { console.warn('[frame] /api/layout arrived late and still disagrees — staying put to avoid a reload loop'); } catch (e2) {} return; }
+        try { sessionStorage.setItem('rs-late-layout-reload', '1'); } catch (e3) {}
+        location.reload();
+      }).catch(function () {});
+    }
   })();
 </script>
 <script>
-  window.__rsFrameBoot.then(function () {
+  /* v1.3 (RS-SEC v1.02, C12): this chain had no .catch — a throw anywhere in
+     the bootstrap above (or a script that failed to parse) left the TV on a
+     black page with no clue why and no frame code running at all. Log it and
+     boot the frame anyway on whatever defaults are in place. */
+  (window.__rsFrameBoot || Promise.resolve()).catch(function (e) {
+    try { console.error('[frame] layout bootstrap failed — booting on defaults', e); } catch (e2) {}
+  }).then(function () {
     // ---- which frame am I? ----  ?frame=<id>   (also accepts ?id=)
     var qs = new URLSearchParams(location.search);
     var frameId = (qs.get('frame') || qs.get('id') || 'L1').trim().toUpperCase();   // Phase 2a: accept the given id verbatim
@@ -106,8 +156,11 @@
       musKey = key;
       if (n.ts && (Date.now() - n.ts) > 25000) return;  // old news (page just reconnected) — stay quiet
       if (!t) { t = document.createElement('div'); t.id = 'mustoast'; document.body.appendChild(t); }
-      function esc(x) { return String(x || '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
-      t.innerHTML = (n.img ? '<img src="' + esc(n.img).replace(/"/g, '&quot;') + '" alt="">' : '<span class="note">\u266a</span>')
+      /* v1.3 (RS-SEC v1.02, B5): was & and < only \u2014 a track title or artwork
+         URL from Music Assistant carrying a quote closed the attribute it was
+         pasted into. Full escape, one helper. */
+      function esc(x) { return String(x == null ? '' : x).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+      t.innerHTML = (n.img ? '<img src="' + esc(n.img) + '" alt="">' : '<span class="note">\u266a</span>')
         + '<div style="min-width:0"><div class="tt">' + esc(n.title) + '</div>'
         + (n.artist ? '<div class="ar">' + esc(n.artist) + (n.album ? ' \u00b7 ' + esc(n.album) : '') + '</div>' : '') + '</div>';
       t.classList.remove('on');
@@ -156,7 +209,13 @@
     return DEFROLE[f] || 'none';
   }
   var cur = null, box = null, spdTimers = [];
-  function esc2(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  /* v1.3 (RS-SEC v1.02, B5): full attribute-safe escape — & < > " ' — not the
+     old &/< pair. Everything below is rendered on the TVs from server state
+     whose ultimate source is a rules file / game id someone can edit. */
+  function esc2(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  /* a YouTube video id is an opaque token — anything else is refused outright
+     rather than pasted into an iframe URL */
+  function ytOk(v) { return typeof v === 'string' && /^[A-Za-z0-9_-]{6,20}$/.test(v); }
   function clearT() { spdTimers.forEach(function (t) { clearTimeout(t); }); spdTimers = []; }
   function clear() { clearT(); if (box) { box.remove(); box = null; } cur = null; }
   function show(st) {
@@ -164,7 +223,7 @@
     cur = st.game + '|' + st.ts;
     var role = (st.layout && st.layout[fid]) || roleFor(fid);   /* Phase 2c: server override → layout-derived → literal fallback */
     if (role !== 'video' && role !== 'none' && st.sections && st.sections[role] === false) role = 'none';
-    if (role === 'video' && !st.videoId) role = 'none';
+    if (role === 'video' && !ytOk(st.videoId)) role = 'none';   /* v1.3 (B5): an unusable id means "keep showing the scene", not "render junk" */
     if (role === 'none') return;   /* this TV keeps showing the scene */
     box = document.createElement('div');
     box.style.cssText = 'position:fixed;inset:0;z-index:9000;background:#0b0c10;color:#e8e6df;font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:6vw 5vw;overflow:hidden';
@@ -172,7 +231,7 @@
       fetch('/api/rules?game=' + encodeURIComponent(st.game)).then(function (r) { return r.json(); }).then(function (j) {
         if (!box || !j.rules) return;
         var g = j.rules;
-        box.innerHTML = '<img src="/media/covers/cover_' + st.game + '.jpg" onerror="this.remove()" style="width:22vw;border-radius:1.2vw;box-shadow:0 1vw 4vw rgba(0,0,0,.6)">' +
+        box.innerHTML = '<img src="/media/covers/cover_' + encodeURIComponent(st.game) + '.jpg" onerror="this.remove()" style="width:22vw;border-radius:1.2vw;box-shadow:0 1vw 4vw rgba(0,0,0,.6)">' +   /* v1.3 (B5): st.game went into a src= raw */
           '<div style="font:700 3.4vw serif;color:#e3c489;margin:2.5vw 0 .8vw">' + esc2(g.name) + '</div>' +
           '<div style="font:600 2.4vw sans-serif;letter-spacing:.12em;color:#c9a35e;margin-bottom:1.6vw">' + (TITLES[role] || role) + '</div>' +
           '<div style="font-size:2.55vw;line-height:1.55;white-space:pre-line">' + esc2(g[role]) + '</div>' +
@@ -181,9 +240,18 @@
     } else {
       var unmuted = !!(st.sound && st.sound.on && (st.sound.frame === fid || st.sound.frame === 'both'));
       var inner = '<div style="font:700 3.2vw serif;color:#e3c489;text-align:center;margin-bottom:2vw">How to play</div>';
-      inner += '<iframe id="rsx-yt" src="https://www.youtube-nocookie.com/embed/' + st.videoId +
-        '?autoplay=1&mute=' + (unmuted ? 0 : 1) + '&loop=1&playlist=' + st.videoId +
+      /* v1.3 (RS-SEC v1.02, B5): st.videoId was pasted RAW into the iframe src.
+         A rules entry reading `x" onload="…` broke straight out of the
+         attribute — on the TVs. Validate the token; anything that isn't a
+         plausible YouTube id means no iframe at all. */
+      if (!ytOk(st.videoId)) {
+        inner += '<div style="font:400 2.2vw sans-serif;color:#8a8d99;text-align:center">no video for this game</div>';
+      } else {
+      var vid = esc2(st.videoId);
+      inner += '<iframe id="rsx-yt" src="https://www.youtube-nocookie.com/embed/' + vid +
+        '?autoplay=1&mute=' + (unmuted ? 0 : 1) + '&loop=1&playlist=' + vid +
         '&controls=0&rel=0&iv_load_policy=3&enablejsapi=1" style="width:90vw;height:50.6vw;border:0;border-radius:1.2vw;background:#000" allow="autoplay; fullscreen" allowfullscreen></iframe>';
+      }
       box.innerHTML = '<div style="display:flex;flex-direction:column;justify-content:center;height:100%">' + inner + '</div>';
       var spd = parseFloat(st.speed) || 1;
       [1500, 3000, 5000, 8000, 12000, 20000].forEach(function (ms) {   /* retry while the player boots */

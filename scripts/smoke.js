@@ -1,6 +1,33 @@
 #!/usr/bin/env node
-/* Roomscape smoke test v1.8 — boots the conductor on a scratch port and checks
+/* Roomscape smoke test v1.9 — boots the conductor on a scratch port and checks
    the core API surface. No HA/MA needed. Exit 0 = pass.
+   v1.9 (RS-SEC v1.02, frontend pass): 24 SERVED-FILE canaries in boot 1. There
+   is no browser here, so the XSS and wiring fixes are proved by asserting on
+   the bytes the conductor hands a client — /app.js, /engine.js, /fx.js,
+   /frame.html, /scores.html are fetched over HTTP and checked for:
+     A1  the app's WS URL carries token=, setAdminTok re-dials the socket
+         (__rsWsReconnect + the engine's reconnect export), and frame.html
+         still sends NO token (frames are read-only consumers).
+     A2  /api/kid is no longer a bare fetch GET, and no bare fetch( survives
+         against any mutating-GET path.
+     B1/B4 both card builders escape the mode id; no url('…') style attribute
+         is fed a %27-only-escaped path.
+     B2  opt() escapes value AND label.
+     B3  the wizard's frame-id regex is present and walls use Object.create(null).
+     B5/B6 frame.html + scores.html escape " and ' (not just & and <), and the
+         YouTube id is validated before it reaches an iframe src.
+     B7  fx.js/engine.js attribute-escape WS-supplied media URLs.
+     B8  the postMessage blank-origin exemption is file://-only.
+     C2  the wall helpers can't throw on a non-array wall.
+     C4  scores.html carries the admin token on its writes.
+     C5  the fetch wrapper is same-origin-only / Headers-aware / Request-aware.
+     C6/C12 frame.html fetches /api/layout absolutely, has a boot .catch, and
+         acts on a late layout reply.
+     C7  one IE.adoptLayoutPayload used by all three adoption sites.
+     C10 the fx media-error fallback no longer detaches the failing node.
+     C11 the legacy deck uses absolute /api paths + the token.
+     C13 the dead Sound-Studio VIZ_STYLES copy is gone.
+     plus a version canary for all five touched frontend files.
    v1.8 (RS-SEC v1.01): one check per security fix from the pre-release
    penetration audits.
      F1  static allow-list — app/frame/engine/fx/starter-sound still serve;
@@ -531,6 +558,129 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     // ---- F14: an oversize body gets 413, not a hung connection ----
     const big = await postBig('/api/state', 2.5 * 1024 * 1024);
     check('F14 an oversize POST body answers 413 (not a silent destroy)', big.code === 413, 'code ' + big.code + ' ' + String(big.body).slice(0, 120));
+
+    /* ---- v1.9 (RS-SEC v1.02): SERVED-FILE canaries for the frontend pass ----
+       There is no browser here, so the XSS and wiring fixes can only be proved
+       by asserting on the bytes the conductor actually hands a client. Each
+       check below names the audit item it guards. */
+    const fjs = await get('/app.js');
+    const fframe = await get('/frame.html');
+    const fscores = await get('/scores.html');
+    const fengine = await get('/engine.js');
+    const ffx = await get('/fx.js');
+    check('v1.02 the frame + scores pages still serve', fframe.code === 200 && fscores.code === 200,
+      'frame ' + fframe.code + ', scores ' + fscores.code);
+
+    // A1: the app's WebSocket URL carries the admin token (tokenless sockets can't publish state)
+    check('A1 served /app.js builds its WS URL with token=',
+      /'token=' \+ encodeURIComponent\(tok\)/.test(fjs.body), 'no token= in the app WS URL builder');
+    check('A1 storing a token re-dials the socket (__rsWsReconnect)',
+      fjs.body.indexOf('__rsWsReconnect') >= 0 && fengine.body.indexOf('reconnect: reconnect') >= 0,
+      'app hook ' + (fjs.body.indexOf('__rsWsReconnect') >= 0) + ', engine export ' + (fengine.body.indexOf('reconnect: reconnect') >= 0));
+    check('A1 frame.html stays TOKENLESS (frames only listen)',
+      fframe.body.indexOf('token=') < 0, 'frame.html now sends a token on its socket');
+
+    // A2: no bare fetch GET against a mutating, token-gated path
+    check('A2 /api/kid is no longer a bare fetch GET in the served app',
+      fjs.body.indexOf("fetch('/api/kid") < 0 && fjs.body.indexOf("post('/api/kid?on=") >= 0,
+      'bare fetch ' + (fjs.body.indexOf("fetch('/api/kid") >= 0) + ', post ' + (fjs.body.indexOf("post('/api/kid?on=") >= 0));
+    check('A2 no bare fetch GET remains against any mutating-GET path',
+      !/fetch\('\/api\/(kid|panic|rescan|warmthumbs|game\/|mode\/)/.test(fjs.body),
+      'a bare fetch( survives on a gated path');
+
+    // B1/B4: mode ids and thumbnail URLs are escaped in the two card builders
+    check('B1 the Play + Design card builders escape the mode id',
+      (fjs.body.match(/data-id="' \+ esc\(id\) \+ '"/g) || []).length >= 2,
+      'esc(id) found ' + ((fjs.body.match(/data-id="' \+ esc\(id\) \+ '"/g) || []).length) + ' time(s), expected 2');
+    check('B4 background-image thumbs go through esc(), not %27 alone',
+      !/url\(\\'' \+ th\.replace/.test(fjs.body) && /esc\(th\.replace/.test(fjs.body),
+      'a raw th.replace(%27) still reaches a style attribute');
+
+    // B2: one escape for every <option>
+    check('B2 opt() escapes both the value and the label',
+      /'<option value="' \+ esc\(v\) \+ '"/.test(fjs.body) && /'>' \+ esc\(l\) \+ '<\/option>'/.test(fjs.body),
+      'opt() still interpolates raw v / l');
+
+    // B3: wizard frame-id validation + no prototype write
+    check('B3 the wizard validates custom frame ids and builds walls with a null prototype',
+      fjs.body.indexOf('/^[A-Za-z0-9_-]{1,12}$/') >= 0 && /walls = Object\.create\(null\)/.test(fjs.body),
+      'regex ' + (fjs.body.indexOf('/^[A-Za-z0-9_-]{1,12}$/') >= 0) + ', Object.create(null) ' + /walls = Object\.create\(null\)/.test(fjs.body));
+
+    // B5/B6: the two standalone pages escape quotes, not just & and <
+    const weakEsc = /replace\(\/&\/g, ?["']&amp;["']\)\.replace\(\/<\/g/;
+    check('B5 frame.html escaping covers " and \' (both inline lanes)',
+      (fframe.body.match(/\[&<>"'\]/g) || []).length >= 2 && !weakEsc.test(fframe.body),
+      'full escapes ' + ((fframe.body.match(/\[&<>"'\]/g) || []).length) + ', weak escape left ' + weakEsc.test(fframe.body));
+    check('B5 frame.html validates the YouTube id before it reaches an iframe src',
+      fframe.body.indexOf('/^[A-Za-z0-9_-]{6,20}$/') >= 0 && fframe.body.indexOf("embed/' + st.videoId") < 0,
+      'validator ' + (fframe.body.indexOf('/^[A-Za-z0-9_-]{6,20}$/') >= 0) + ', raw videoId still in the src ' + (fframe.body.indexOf("embed/' + st.videoId") >= 0));
+    check('B6 scores.html escaping covers " and \'',
+      /\[&<>"'\]/.test(fscores.body) && !/replace\(\/&\/g,"&amp;"\)\.replace\(\/</.test(fscores.body),
+      'scores.html still on the &/< escape');
+
+    // B7: media URLs in the render paths are attribute-escaped
+    check('B7 fx.js + engine.js attribute-escape WS-supplied media URLs',
+      ffx.body.indexOf("<source src=\"' + escA(url)") >= 0 && fengine.body.indexOf('escAttr(img)') >= 0,
+      'fx escA ' + (ffx.body.indexOf("<source src=\"' + escA(url)") >= 0) + ', engine escAttr ' + (fengine.body.indexOf('escAttr(img)') >= 0));
+
+    // B8: the postMessage escape hatch is file:// only
+    check('B8 the bus accepts a blank postMessage origin only on file://',
+      /diskDev = \(location\.protocol === 'file:'\)/.test(fengine.body) && /if \(diskDev && \(o === '' \|\| o === 'null'\)\)/.test(fengine.body),
+      'the ""/"null" origin exemption is still unconditional');
+
+    // C2 / C7: the layout helpers
+    check('C2 the wall helpers cannot throw on a non-array wall',
+      /function wallArr\(k\)/.test(fengine.body) && !/LAYOUT\.walls\[wallKeyOf\(idx\)\] \|\| \[\]/.test(fengine.body),
+      'wallArr missing, or a raw LAYOUT.walls[...] lookup survives');
+    check('C7 one shared layout-adoption predicate (IE.adoptLayoutPayload) used by all three pages',
+      fengine.body.indexOf('adoptLayoutPayload: adoptLayoutPayload') >= 0
+        && (fjs.body.match(/IE\.adoptLayoutPayload/g) || []).length >= 2
+        && fframe.body.indexOf('IE.adoptLayoutPayload') >= 0,
+      'engine export ' + (fengine.body.indexOf('adoptLayoutPayload: adoptLayoutPayload') >= 0)
+        + ', app uses ' + ((fjs.body.match(/IE\.adoptLayoutPayload/g) || []).length) + ', frame uses ' + (fframe.body.indexOf('IE.adoptLayoutPayload') >= 0));
+
+    // C4 / C11: the two token-less standalone pages
+    check('C4 scores.html sends the admin token on its writes',
+      fscores.body.indexOf('x-rs-token') >= 0 && fscores.body.indexOf('rs-admin-token') >= 0,
+      'scores.html still POSTs anonymously');
+    check('C11 the legacy control deck uses absolute /api paths and carries the token',
+      fengine.body.indexOf('function deckFetch') >= 0 && !/fetch\('api\//.test(fengine.body),
+      'deckFetch ' + (fengine.body.indexOf('function deckFetch') >= 0) + ', path-relative fetch left ' + /fetch\('api\//.test(fengine.body));
+
+    // C5: the fetch wrapper
+    check('C5 the fetch wrapper is same-origin-only, Headers-aware and Request-aware',
+      /function sameOrigin\(u\)/.test(fjs.body) && fjs.body.indexOf('Object.fromEntries(bh.entries())') >= 0
+        && fjs.body.indexOf('input instanceof Request') >= 0,
+      'sameOrigin ' + /function sameOrigin\(u\)/.test(fjs.body)
+        + ', Headers ' + (fjs.body.indexOf('Object.fromEntries(bh.entries())') >= 0)
+        + ', Request ' + (fjs.body.indexOf('input instanceof Request') >= 0));
+
+    // C6 / C12: frame.html boot
+    check('C6/C12 frame.html fetches /api/layout absolutely, catches boot failure and honours a late reply',
+      fframe.body.indexOf("fetch('/api/layout')") >= 0
+        && fframe.body.indexOf("fetch('api/layout')") < 0
+        && fframe.body.indexOf('rs-late-layout-reload') >= 0
+        && /__rsFrameBoot \|\| Promise\.resolve\(\)\)\.catch/.test(fframe.body),
+      'absolute ' + (fframe.body.indexOf("fetch('/api/layout')") >= 0)
+        + ', late-reload ' + (fframe.body.indexOf('rs-late-layout-reload') >= 0)
+        + ', catch ' + /__rsFrameBoot \|\| Promise\.resolve\(\)\)\.catch/.test(fframe.body));
+
+    // C10 / C13
+    check('C10 the fx media-error fallback no longer detaches the failing node',
+      ffx.body.indexOf('parentNode.replaceChild(d, t)') < 0 && /insertBefore\(d, t\.nextSibling\)/.test(ffx.body),
+      'replaceChild still present in fx.js');
+    check('C13 the dead Sound-Studio VIZ_STYLES copy is gone',
+      (fjs.body.match(/var VIZ_STYLES/g) || []).length === 1,
+      'VIZ_STYLES declared ' + ((fjs.body.match(/var VIZ_STYLES/g) || []).length) + ' time(s), expected 1');
+
+    // versions (rule 11: never change behaviour without changing the version)
+    check('v1.02 the five touched frontend files carry bumped versions',
+      /app\.js\)  v3\.84/.test(fjs.body) && /engine\.js\)  v0\.92/.test(fengine.body)
+        && /fx\.js\)  v1\.62/.test(ffx.body) && fframe.body.indexOf('frame page — v1.3') >= 0
+        && fscores.body.indexOf('scoreboard — v1.1') >= 0,
+      'app ' + /app\.js\)  v3\.84/.test(fjs.body) + ', engine ' + /engine\.js\)  v0\.92/.test(fengine.body)
+        + ', fx ' + /fx\.js\)  v1\.62/.test(ffx.body) + ', frame ' + (fframe.body.indexOf('frame page — v1.3') >= 0)
+        + ', scores ' + (fscores.body.indexOf('scoreboard — v1.1') >= 0));
   }
   child.kill();
 
