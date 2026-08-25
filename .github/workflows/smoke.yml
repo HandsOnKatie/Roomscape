@@ -25,9 +25,9 @@ jobs:
         # Docker image ships. Both must stay green.
         node: ['16', '22']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
 
@@ -65,7 +65,7 @@ jobs:
     # it is pushed. Not a substitute for GitHub's own secret scanning.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: No tracked secrets, tokens or private keys
         run: |
