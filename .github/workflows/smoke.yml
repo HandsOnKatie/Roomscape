@@ -1,0 +1,89 @@
+name: smoke
+
+# The repo has zero required runtime dependencies, so there is nothing to
+# install — this just runs the suite that already exists. scripts/smoke.js
+# boots the Conductor six times against scratch paths (it overrides DATA_DIR,
+# MEDIA_DIR, STATE_FILE and PROFILES_FILE every time) so it never touches a
+# real install, and it asserts on security behaviour, not just happy paths.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 16 is the floor declared in package.json engines; 22 is what the
+        # Docker image ships. Both must stay green.
+        node: ['16', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax-check every JS file
+        run: |
+          fail=0
+          for f in $(git ls-files '*.js'); do
+            node --check "$f" || { echo "SYNTAX FAIL: $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: Validate every JSON file
+        run: |
+          fail=0
+          for f in $(git ls-files '*.json'); do
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" \
+              || { echo "INVALID JSON: $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: Shell-check the deploy scripts
+        run: |
+          fail=0
+          for f in $(git ls-files 'deploy/*.sh') deploy/xinitrc; do
+            [ -f "$f" ] || continue
+            bash -n "$f" || { echo "SHELL SYNTAX FAIL: $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: Run the smoke suite
+        run: node scripts/smoke.js
+
+  secrets:
+    # Cheap belt-and-braces against the one mistake that cannot be undone once
+    # it is pushed. Not a substitute for GitHub's own secret scanning.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No tracked secrets, tokens or private keys
+        run: |
+          if git ls-files -z | xargs -0 grep -lIE \
+               'eyJ[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY' \
+               2>/dev/null | grep . ; then
+            echo "::error::Possible secret in a tracked file (see the paths above)"
+            exit 1
+          fi
+          echo "no secret-shaped strings in tracked files"
+
+      - name: Runtime data and backups must never be tracked
+        run: |
+          # data/, media/ and people/ legitimately track a .gitkeep and nothing else.
+          if git ls-files \
+               | grep -vE '^(data|media|people|overlays)/(\.gitkeep|README\.txt)$' \
+               | grep -E '^_backups/|\.bak$|^\.env$|^config\.json$|^state\.json$|^(data|media|people)/|admin-token' ; then
+            echo "::error::A runtime/state file is tracked — check .gitignore"
+            exit 1
+          fi
+          echo "no runtime state tracked"

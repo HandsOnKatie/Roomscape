@@ -1,0 +1,47 @@
+# Normalise line endings.
+#
+# Why this file exists: docs/INSTALL.md tells you to `scp -r deploy` from your
+# machine to a Linux display PC. On Windows with core.autocrlf=true, git checks
+# those scripts out with CRLF — and a shell script with CRLF fails on Linux with
+# the famously unhelpful `/bin/bash^M: bad interpreter`. That symptom is even a
+# TROUBLESHOOTING.md entry. Forcing LF on everything Linux executes removes the
+# whole class of problem at source.
+
+# Let git decide for anything not named below.
+* text=auto
+
+# --- MUST be LF: anything a Linux box executes or parses ---
+*.sh            text eol=lf
+*.service       text eol=lf
+deploy/xinitrc  text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Dockerfile      text eol=lf
+
+# --- Node + web sources: LF everywhere, so diffs stay clean across platforms ---
+*.js            text eol=lf
+*.json          text eol=lf
+*.html          text eol=lf
+*.css           text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+.env.example    text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# --- Binary: never touch these ---
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.webp          binary
+*.gif           binary
+*.mp4           binary
+*.webm          binary
+*.mov           binary
+*.m4v           binary
+*.mp3           binary
+*.wav           binary
+*.flac          binary
+*.zip           binary
+*.woff          binary
+*.woff2         binary

@@ -1,6 +1,6 @@
 # Architecture
 
-**Doc version 1.03** · Engine: conductor v5.03 · Repo: v1.03
+**Doc version 1.05** · Engine: conductor v5.05 · Repo: v1.05
 
 Roomscape is a hub-and-spokes system: one Node process (the **Conductor**) owns all state; everything else — control app, TV frames, Home Assistant, edge mirrors — is a client of it.
 

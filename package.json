@@ -1,7 +1,17 @@
 {
   "name": "immersion-engine-conductor",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "The Immersion Engine — Conductor backend (state authority + WebSocket sync + REST + optional MQTT) and the frame/control web app.",
+  "license": "MIT",
+  "author": "Hands On Katie (https://handsonkatie.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HandsOnKatie/roomscape.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HandsOnKatie/roomscape/issues"
+  },
+  "homepage": "https://github.com/HandsOnKatie/roomscape#readme",
   "main": "conductor.js",
   "scripts": {
     "start": "node conductor.js"

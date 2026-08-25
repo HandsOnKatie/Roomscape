@@ -1,5 +1,20 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.84
+   RoomScape — Play & Design app (app.js)  v3.85
+   v3.85 (v1.04 — two shadowed-declaration bugs, found in the pre-publication
+   review. Both were second declarations of an existing function in the SAME
+   IIFE scope, so the later one silently won for every caller in the file):
+     D1 recordRecent() at ~1149 (music) shadowed recordRecent() at ~929 (modes).
+        playModeAt()/launch() were therefore pushing mode ids into
+        settings.music.recents and firing persist() — a full profiles.json POST
+        — on EVERY mode launch, while Play's "Recently played" row never
+        appeared because rs-recent was never written. Renamed the music one to
+        recordRecentMusic().
+     D2 edBase() at ~4278 (intro lens) shadowed edBase() at ~3336 (design).
+        The shadow omitted paintCanvas() and the preview push, so editing a
+        phase's Lighting or Default scene, the mode Section, or the
+        hide-from-Play toggle left the canvas and the live TV preview stale.
+        Phase reorder/delete still worked because they call paintCanvas()
+        themselves — which is why it survived testing. Shadow deleted.
    v3.84 (RS-SEC v1.02 — frontend security + bug pass, follows the v1.01
    backend hardening):
      A1 the WebSocket URL now carries ?token=<admin token> when one is stored,
@@ -1142,11 +1157,17 @@
   function musPlay(uri, label, image) {
     post('/api/music/play', { uri: uri, label: label }).then(function (r) {
       toast(r.ok ? '♪ ' + label + ' — room sounds paused' : (r.error || 'Couldn’t start playback'));
-      if (r.ok !== false) recordRecent(uri, label, image);
+      if (r.ok !== false) recordRecentMusic(uri, label, image);
       setTimeout(pollMusicStatus, 700);
     });
   }
-  function recordRecent(uri, label, image) {
+  /* v3.85: was recordRecent() — a second declaration of the mode-history helper at
+     line ~929, in the SAME IIFE scope. The later declaration won for every caller,
+     so playModeAt()/launch() were writing mode ids into settings.music.recents AND
+     firing persist() (a full profiles.json POST) on every mode launch, while the
+     Play tab's "Recently played" list stayed permanently empty. Renamed; do not
+     re-collide these two. */
+  function recordRecentMusic(uri, label, image) {
     var m = musMeta();
     m.recents = [{ uri: uri, label: label, image: image || null, ts: Date.now() }].concat(m.recents.filter(function (r) { return r.uri !== uri; })).slice(0, 8);
     persist().catch(function () {});
@@ -4269,7 +4290,13 @@
       { at: 2500, type: 'sound', src: 'sounds/starter/boom_low.wav', where: 'all', gain: 1 }, { at: 2500, type: 'screen', event: 'shake' },
       { at: 5000, type: 'sound', src: 'sounds/starter/chime_soft.wav', where: 'all', gain: 1 }, { at: 5100, type: 'lights', action: 'flash' }] }
   };
-  function edBase(fn) { fn(draft); dirty = true; updateDirtyUI(); }   /* intro is mode-level — never a phase patch */
+  /* v3.85: a second edBase() used to live here. It was a SHADOW of the real one at
+     ~line 3336 (same IIFE), and being later it won for every caller in the file —
+     silently dropping paintCanvas() and the live-preview push. Symptom: changing a
+     phase's Lighting or Default scene, the mode Section, or the hide-from-Play
+     toggle left the wall canvas and the TV preview stale. The 3336 version already
+     does the right thing for mode-level edits (intro included), so this one is gone.
+     Do not reintroduce a local edBase here. */
   function inEnsure() { draft.intro = draft.intro || { on: false, skippable: true, kidSafeAlt: 'skip', music: null, cues: [] }; if (!Array.isArray(draft.intro.cues)) draft.intro.cues = []; return draft.intro; }
   function inEnd(I) { var last = 0; (I.cues || []).forEach(function (c) { if (c.at > last) last = c.at; }); if (I.music && I.music.src && !(I.cues || []).length) last = Math.max(last, 4000); return (typeof I.endAtMs === 'number' && I.endAtMs > last) ? I.endAtMs : last + 1500; }
   function inFmt(ms) { return (ms / 1000).toFixed(1) + 's'; }

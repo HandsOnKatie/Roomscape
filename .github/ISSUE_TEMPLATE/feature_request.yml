@@ -1,0 +1,58 @@
+name: Feature request
+description: Suggest something RoomScape should be able to do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a look at [ROADMAP.md](../blob/main/ROADMAP.md) first — it may
+        already be there, or explicitly out of scope.
+
+        Worth knowing about the shape of this project before suggesting:
+        it has **zero required runtime dependencies** and no build step, and
+        `conductor-lib/` may only use Node builtins. Proposals that need an npm
+        package in the hot path are a hard sell.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >
+        Describe the situation in the room, not the feature. "I want my kids to
+        be able to start game night without the tablet" tells us more than
+        "add a REST endpoint".
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What did you have in mind?
+      description: If you have a specific shape in mind, describe it. Rough is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
+      description: >
+        Existing features that nearly work, or workarounds you're using now.
+        Sometimes the answer is a mode, a phase or a moment you hadn't found.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Roughly where does this live?
+      multiple: true
+      options:
+        - Modes / Design
+        - Play (the family remote)
+        - Screens and layout
+        - Lighting / Home Assistant
+        - Sound / Music
+        - Timer / Scores / Games
+        - Theme packs
+        - Install, Docker or the display PCs
+        - Docs
+        - Something else

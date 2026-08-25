@@ -1,6 +1,6 @@
 # Roomscape — Complete Reference
 
-**Doc version 1.03** · Conductor v5.03 · Repo v1.03
+**Doc version 1.05** · Conductor v5.05 · Repo v1.05
 The single deepest document in the project. If you want the short version, read the [README](../README.md). If you want to *understand the system*, read this.
 
 **Contents**
@@ -102,7 +102,7 @@ These are the beliefs baked into the code. If your situation contradicts one, ex
 ```
 
 - **Conductor** (`conductor.js`, ~5,800 lines): one Node process. Holds room state, serves the app and frame pages, exposes the REST API, relays WebSocket state to every screen, scans media, generates thumbnails, drives HA and MA.
-- **`conductor-lib/`**: five small modules injected with a context object — `ha.js` (HA REST), `music.js` (hand-rolled MA WebSocket client), `ws.js` (hand-rolled WebSocket server), `media.js` (path safety, scanning, thumbnails), `themes.js` (pack scan + expansion), `zip.js` (pure-Node zip reader/writer). **These may only require Node builtins** — never npm packages — because the app directory may live on a Windows share while the runtime is a Linux container.
+- **`conductor-lib/`**: six small modules injected with a context object — `ha.js` (HA REST), `music.js` (hand-rolled MA WebSocket client), `ws.js` (hand-rolled WebSocket server), `media.js` (path safety, scanning, thumbnails), `themes.js` (pack scan + expansion), `zip.js` (pure-Node zip reader/writer). **These may only require Node builtins** — never npm packages — because the app directory may live on a Windows share while the runtime is a Linux container.
 - **The app** (`app.html` + `app.js` + `engine.js` + `fx.js`): the tablet UI. Two "spaces": **Play** (tap a mode) and **Design** (build modes).
 - **Frame pages** (`frame.html` + `engine.js` + `fx.js` + `fx-audio.js`): what each TV runs. Pure consumers of state.
 - **Edge mirror** (`deploy/edge.js`, optional): a local media cache on each display PC so 4K video plays off local disk instead of streaming from the NAS.
@@ -162,8 +162,8 @@ Every mode passes through **phases** on activation: `arrival` (1.6 s) → `immer
 ### Visual effects
 - **Transitions (17):** crossfade, blurfade, rackfocus, dipblack, dipwhite, dipaccent, cut, pushleft, pushright, wipe, iris, zoomblur, blinds, glitch, pixelate, ripple\*, morph\* (\* WebGL, auto-degrades per frame).
 - **Ambients (11):** none, kenburns, breathe, flicker, rain, snow, embers, fog, starfield, grain, caustics.
-- **Screen events (7):** lightning, bloom, drain, shake, ignite, softflash.
-- **Synth SFX (10):** thunder, boom, whoosh, riser, chime, toll, zap, shatter, pageturn — generated in the browser, no files needed.
+- **Screen events (7):** none, lightning, bloom, drain, shake, ignite, softflash.
+- **Synth SFX (10):** none, thunder, boom, whoosh, riser, chime, toll, zap, shatter, pageturn — generated in the browser, no files needed.
 - **Overlays**: transparent PNG frames (window mullions, arches, mats) layered over the scene.
 - **Matte, halos, chroma key, art tones**: per-mode or global finishing.
 
@@ -216,7 +216,7 @@ Every mode passes through **phases** on activation: `arrival` (1.6 s) → `immer
 | `auth.enabled` | bool | `true` | **`false` disables the admin token entirely** |
 | `auth.tagOpen` | bool | `false` | `true` lets `/api/tag/<id>` work without a token |
 | `cors` | string/array | *omitted* | Omitted = same-origin only. `"*"` = wide open. Array = allow-list |
-| `rooms` | array | `[{id:'main',…}]` | Multi-room registry. Replaces on save |
+| `rooms` | array | `[{id:'dining'},{id:'playroom'}]` | Multi-room registry. Replaces on save. The built-in fallback is two example rooms; `config.example.json` shows a single `main` room, which is the saner starting point. |
 | `edges` | array | `[]` | Display-PC edge mirrors. Replaces on save |
 
 **Replace-not-merge keys:** `layout.walls`, `layout.roles`, `ha.tvs`, `ha.lightZones`, `ha.tvQuirks`, `rooms`, `edges`. Everything else deep-merges.
@@ -237,7 +237,7 @@ A second, larger settings block lives inside `profiles.json` under `settings` (c
 | `THEMES_DIR` | `<APP_DIR>/themes` | Theme packs |
 | `PHOTOS_DIR` | `<APP_DIR>/Photos` | Photo albums |
 | `OVERLAY_DIR` | `<APP_DIR>/overlays` | Overlay art |
-| `STATE_FILE` / `PROFILES_FILE` | `<APP_DIR>/…` | Room state / mode store |
+| `STATE_FILE` / `PROFILES_FILE` | `<APP_DIR>/…` | Room state / mode store. **`docker/compose.yaml` overrides both to `/app/data/…`**, which is where a Docker install actually keeps them. On bare Node they default beside the app unless you set them. |
 | **`ADMIN_TOKEN`** | *generated* | Pins or rotates the admin token; overrides the file |
 | **`HA_URL` / `HA_TOKEN`** | — | Home Assistant. Both needed or HA is disabled |
 | `MA_URL` / `MA_TOKEN` | — | Music Assistant. Absent = music features hide |
@@ -250,9 +250,9 @@ A second, larger settings block lives inside `profiles.json` under `settings` (c
 | Path | Written by | Contents |
 |---|---|---|
 | `config.json` | you / wizard | Install config (§6). Timestamped `.bak` on every save, 10 kept |
-| `profiles.json` | app | **All your modes** + `settings` + NFC tag map. The important file |
+| `data/profiles.json` | app | **All your modes** + `settings` + NFC tag map. The important file. (Under Docker; on bare Node it defaults to `<APP_DIR>/profiles.json` unless `PROFILES_FILE` says otherwise. The `profiles.json` in the repo root is only a first-boot starter template.) |
 | `data/admin-token` | conductor | The generated admin token |
-| `data/state.json` | conductor | Live room state (rebuildable) |
+| `data/state.json` | conductor | Live room state (rebuildable). Same `APP_DIR` vs `DATA_DIR` note as above. |
 | `data/_backups/` | conductor | Profile backups: everything <48 h, first-of-day for 60 d, cap 400 |
 | `data/*.json` | conductor | Scores, rules, playlists, variants, viz, social effects, posters |
 | `data/.thumbs/` | conductor | Thumbnail cache (safe to delete) |
@@ -328,7 +328,7 @@ Connections from a *different* origin are refused. Reconnect is automatic with 1
 - An **admin token** guards every mutating call. It's generated at first boot, printed once in the log, stored at `data/admin-token`, and enterable in the app.
 - **The read surface is deliberately open** on the LAN: state, layout, media, and the profile endpoints (which expose HA entity ids, your layout, schedules and the NFC tag map — only the music token is redacted). Theme packs are downloadable. Anyone on your LAN can *watch*; only token-holders can *change*.
 - **CORS is same-origin by default.** WebSocket publishing requires the token; cross-origin upgrades are refused.
-- **Two independent penetration audits** were run before release; everything found was fixed in v1.01–v1.03 (see CHANGELOG). Nothing was ever deployed publicly.
+- **Three independent adversarial reviews, a documentation-inventory pass and a pre-publication review** were run before release; everything found was fixed in v1.01–v1.04 (see [CHANGELOG](../CHANGELOG.md) and the [audit report](SECURITY-AUDIT-2026-08.md)). Nothing was ever deployed publicly.
 - **`deploy/edge.js` has no auth at all** — trusted LAN segment only.
 
 ---

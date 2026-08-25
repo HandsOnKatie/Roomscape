@@ -1,0 +1,17 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/HandsOnKatie/roomscape/security/advisories/new
+    about: >
+      Please do NOT open a public issue for a security problem. Report it
+      privately here. See SECURITY.md for what is in scope — note that
+      RoomScape is a trusted-LAN tool with several deliberately open surfaces,
+      all documented.
+  - name: Question, idea or show-and-tell
+    url: https://github.com/HandsOnKatie/roomscape/discussions
+    about: >
+      Setup questions, theme packs you've built, photos of your wall. Issues
+      are for bugs and concrete feature requests.
+  - name: Read the docs first
+    url: https://github.com/HandsOnKatie/roomscape/blob/main/docs/TROUBLESHOOTING.md
+    about: Most "it doesn't work" questions are answered in TROUBLESHOOTING.md or the GUIDE.

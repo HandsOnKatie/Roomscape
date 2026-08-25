@@ -2,7 +2,7 @@
 
 **Scope:** Roomscape v1.00 (the first feature-complete build), audited before any public release.
 **Method:** three independent adversarial reviews — backend auth/CORS/zip/import, theme-loader/config/path handling, and the frontend — each writing working exploits against a live instance rather than reading code alone. A fourth pass (documentation inventory) found two more issues.
-**Outcome:** everything found was fixed in v1.01, v1.02 and v1.03. **Roomscape was never deployed publicly and this repository has never been pushed anywhere**, so there was no exposure window.
+**Outcome:** everything found was fixed in v1.01, v1.02 and v1.03. A fifth pass — a full pre-publication review of the whole repository — ran on 2026-08-25 and is recorded in the [1.04 changelog entry](../CHANGELOG.md); it found four further issues, all fixed. **prior to this release, Roomscape was never deployed publicly and the repository was never published**, so there was no exposure window.
 
 This document exists because a project that asks for your Home Assistant token should show its working.
 

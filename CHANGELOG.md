@@ -1,5 +1,129 @@
 # Changelog
 
+## 1.05 — 2026-08-25 (conductor v5.05)
+
+**The two remaining High findings, and the repo plumbing for a public release.**
+1.04 fixed what actively misled people; this closes the two resource-exhaustion
+holes and adds the things a public repository needs on day one.
+
+Both fixes are in the same class, and it's worth naming the pattern: *every
+deliberately-open GET had been assessed for what it discloses, but not for what
+it costs to serve.* The import path was capped and budget-checked in 1.00; the
+export path — the unauthenticated half — was not. The WebSocket receive buffer
+was capped in 2.52; the fragment accumulator sitting behind it was not.
+
+### Fixed — security
+
+- **`conductor-lib/ws.js`: the fragment accumulator had no cap.** `WS_MAX_BUF`
+  bounded the receive buffer and the *declared* frame length, but once a frame
+  parsed it was spliced out of the buffer and pushed onto `client.frag`, which
+  grew forever. WebSocket upgrades are deliberately tokenless so kiosk frames
+  work, and a non-browser client sends no `Origin`, so **any device on the LAN**
+  could send frames of just under 4 MB with `FIN=0`, never finish the message,
+  and drive the Conductor to an OOM kill in about a thousand frames. The running
+  total is now capped and the client dropped with the reason logged.
+
+  While in there: continuation frames are policed properly (a text frame
+  arriving mid-fragment, or a continuation with nothing to continue, are both
+  refused), and **unmasked client frames are rejected** — RFC 6455 §5.1 requires
+  clients to mask, and we were reading the bit and then accepting either way.
+
+- **A cap of 64 concurrent WebSocket clients.** Every connected socket receives
+  a full `JSON.stringify(state)` on every change and on the 2-second clock tick.
+  The 45-second heartbeat reaper only removes sockets that stop responding, so a
+  client that keeps reading stayed forever. A real room uses single digits.
+
+- **`GET /api/theme/export/<pack>` is bounded.** It answers GET, so it sits on
+  the open read surface by design — but it read every file in the pack into
+  memory and deflated them **synchronously**, with no cap. A pack containing a
+  few hundred MB of video (entirely normal for this project) meant one
+  unauthenticated request allocated several multiples of that and blocked the
+  event loop, stalling every wall TV; concurrent requests multiplied it.
+
+  Now: the pack is measured with `stat` before a byte is read, anything over
+  200 MB is refused with a 413 that tells you to copy the folder directly,
+  concurrent requests for the same pack share a single build, and the build
+  yields to the event loop before starting.
+
+### Added — repository
+
+- **CI** (`.github/workflows/smoke.yml`) — runs the 209-check smoke suite on
+  Node 16 and 22, syntax-checks every JS file, validates every JSON file,
+  `bash -n`s the deploy scripts, and fails the build if a secret-shaped string
+  or a runtime state file is ever tracked.
+- **Issue templates** for bugs and features, both of which ask for the things
+  `TROUBLESHOOTING.md` says to gather — and both of which warn, before you paste
+  anything, that `/api/log` and `/api/profiles` contain your entity ids, your
+  schedule and your NFC tag map.
+- **A pull-request template** carrying the version-bump rule, the
+  no-npm-in-`conductor-lib` rule, and the escaping rule, since those are the
+  three things a contributor is most likely to not know.
+- `package.json` now declares `license`, `author`, `repository`, `bugs` and
+  `homepage`.
+- **`.gitattributes`** forcing LF on everything a Linux box executes — the
+  shell scripts, the systemd units, `deploy/xinitrc`, the YAML. `INSTALL.md`
+  tells you to `scp -r deploy` from your own machine to a display PC, and a
+  Windows checkout with CRLF turns that into `/bin/bash^M: bad interpreter` on
+  arrival. That symptom was already a TROUBLESHOOTING entry; now it can't
+  happen.
+
+## 1.04 — 2026-08-25 (conductor v5.04)
+
+**Pre-publication review pass.** An independent review of the whole repository
+ahead of the first public release. The privacy sweep came back clean — no
+secrets, addresses, hostnames or personal paths in the working tree or in git
+history — but four things were worth fixing before anyone else runs this.
+
+### Fixed
+
+- **`SECURITY.md` named the wrong port for the edge service.** It said the
+  display-PC service listens on **8093** and told you to firewall 8093. The
+  actual default is **8090** (`deploy/edge.js`, `deploy/immersion-edge.service`,
+  `deploy/install-edge.sh`, and `docs/INSTALL.md` all agree on 8090). Anyone
+  following the security advice was firewalling a closed port and leaving the
+  real one open. The warning now also notes that the edge service is a
+  *separate* process from the Conductor sharing the same default port, so it
+  must be firewalled on every kiosk machine, not just the Conductor host.
+
+- **`recordRecent()` was declared twice in the same scope (`app.js`).** A music
+  version at ~line 1149 shadowed the mode-history version at ~line 929, and
+  being later it won for every caller in the file. Two consequences, both
+  invisible: every mode launch was POSTing the **entire `profiles.json`** to the
+  server (via the music helper's `persist()`) on the hot path, and Play's
+  "Recently played" row never appeared, because `rs-recent` was never written.
+  The music helper is now `recordRecentMusic()`.
+
+- **`edBase()` was declared twice in the same scope (`app.js`).** The intro-lens
+  copy at ~line 4278 shadowed the design-lens original at ~line 3336. The shadow
+  omitted `paintCanvas()` and the live-preview push, so **changing a phase's
+  Lighting or Default scene, the mode's Section, or the hide-from-Play toggle
+  left the wall canvas and the TV preview stale**. Phase reorder and delete were
+  unaffected because they call `paintCanvas()` themselves — which is exactly why
+  this survived testing. The shadow is gone.
+
+- **The scoreboard rendered player names unescaped on every Frame TV
+  (`fx.js`).** `scorePanel()` interpolated `name`, `nick`, the avatar initial,
+  the per-player colour and the mode accent straight into HTML. The v1.02 (B7)
+  sweep had escaped the avatar *photo URL* one line above but missed the names
+  directly below it. Since adding a player is the least-privileged write in the
+  product, a crafted name executed script on all six wall TVs — same-origin,
+  where the admin token lives — as soon as a score panel painted. Every value in
+  `scorePanel()` and `mapPanel()` now goes through `escA()`, and scores are
+  coerced numerically.
+
+### Not changed (documented, deliberate)
+
+`deploy/edge.js` still binds `0.0.0.0` with no authentication. This remains the
+single largest exposure in the project and is described in full under "Known
+open surfaces" in [SECURITY.md](SECURITY.md) — keep display PCs on a trusted,
+firewalled segment. Note also that the "unauthenticated remote code execution"
+wording there is worst-case: `setScreens()` does validate its inputs (output
+names against `/^[A-Za-z0-9_-]+$/`, rotations against an allow-list), and no
+injection path into `~/.xinitrc` is currently known. The accurate reading is
+*unauthenticated remote reconfiguration and session restart of the display PC,
+one validation regression away from code execution* — which is still reason
+enough to keep it off any network you don't control.
+
 ## 1.03 — 2026-08-06 (conductor v5.03)
 
 **More pre-release fixes.** While writing the reference documentation for v1.02

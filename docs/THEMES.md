@@ -1,6 +1,6 @@
 # Theme packs — format specification
 
-**Format version: 1** · **Doc version 0.30**
+**Format version: 1** · **Doc version 1.05**
 Status: format is FINAL for v1, and the loader that consumes it is LIVE
 (conductor RS-THEMES v1): packs in `themes/` are scanned at boot and on rescan
 (`POST /api/themes/rescan`, or any library Rescan), and `GET /api/themes` reports
@@ -125,8 +125,9 @@ licence, attribution if the licence demands it. CC0/own-work keeps life simple.
 
 ## Sharing
 
-Zip the folder, share the zip. Import via the app (Play → Import theme) or by
-unzipping into `themes/` and hitting Rescan.
+Zip the folder, share the zip. Import it in the app under **⚙ Settings → 🛠 System
+→ 🧩 Theme packs** (also reachable as step 5 of the setup wizard), or by unzipping
+into `themes/` and hitting Rescan.
 
 In the app this lives under **⚙ Settings → System → 🧩 Theme packs**: the sheet
 lists every installed pack (name, author, version, mode count, any missing

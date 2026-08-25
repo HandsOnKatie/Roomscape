@@ -30,6 +30,7 @@ sounds/*
 !sounds/starter/
 overlays/*
 !overlays/.gitkeep
+!overlays/README.txt
 
 # media file types anywhere outside themes/
 *.mp4

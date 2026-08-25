@@ -1,6 +1,27 @@
 #!/usr/bin/env node
 /* ===================================================================
-   Roomscape — Conductor backend  v5.03 (community release v1.03)
+   Roomscape — Conductor backend  v5.05 (community release v1.05)
+   v5.05: the two remaining High findings from the pre-publication review, plus
+          repo plumbing for the public release.
+          I1 conductor-lib/ws.js: the fragment accumulator had NO cap. WS_MAX_BUF
+             bounded the receive buffer and the declared frame length, but a
+             parsed frame was spliced out of buf and pushed onto client.frag,
+             which grew forever. A tokenless client (upgrades are open by design
+             so kiosk frames work) sending ~4MB frames with FIN=0 could reach
+             GBs resident. Now capped, with the continuation state machine
+             policed and unmasked client frames refused per RFC 6455.
+          I2 a cap on concurrent WebSocket clients (64).
+          I3 GET /api/theme/export is unauthenticated by design (it answers GET)
+             but had neither a size cap nor a budget, and built the zip fully
+             synchronously. The IMPORT path has been capped since 1.00; the
+             export half had not. Now stat-sized before any read, refused over
+             200MB, single-flighted, and yielded to the next tick.
+   v5.04: pre-publication review pass. No backend behaviour changed — the fixes
+          in 1.04 are two shadowed-declaration bugs in app.js, a scoreboard
+          escaping gap in fx.js, and a corrected port number in SECURITY.md
+          (the edge service listens on 8090, not 8093, so the firewall advice
+          had been pointing at a closed port). The banner and /api/health move
+          with them so every surface still agrees. See CHANGELOG 1.04.
    v5.03: RS-SEC v1.03 — fixes found during the pre-release documentation
           inventory (still nothing deployed publicly). GET /api/log was an
           ungated open read of the console ring buffer, and the ring is
@@ -1298,7 +1319,7 @@ function coreHandler(req, res) {
   }
 
   if (p.startsWith('/api/')) {
-    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.03', repo: '1.03', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
+    if (p === '/api/health') return sendJSON(res, 200, { ok: true, name: 'Roomscape Conductor', version: '5.05', repo: '1.05', clients: clients.size, phase: activePhaseId, frames: Array.from(clients).map((c) => c.frame).filter(Boolean), game: state.game, mode: state.mode, scenes: Object.keys(landIndex).length, overlays: overlayList.length, thumbs: thumbKind, ha: haOn() });
     if (p === '/api/layout') return sendJSON(res, 200, { ok: true, frames: LAYOUT.frames, walls: LAYOUT.walls, roles: LAYOUT.roles, orientation: LAYOUT.orientation, atRest: AT_REST });   // v2.62: wall shape, single source of truth · RS-CONFIG v1: roles/orientation/atRest
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, state);
     if (p === '/api/scenes') return sendJSON(res, 200, { count: Object.keys(landIndex).length, thumbs: thumbKind, scenes: Object.keys(landIndex).sort().map(function (k) { const l = landIndex[k]; const e = encodeURIComponent(l[0]); const d = path.dirname(l[0]).replace(/\\/g, '/'); const dm = (global.__rsDims || {})[l[0]]; const ori = (dm && dm.w && dm.h) ? (dm.w > dm.h ? 'l' : (dm.h > dm.w ? 'p' : 's')) : null; return { key: k, count: l.length, dir: (d === '.' ? '' : d), ori: ori, sample: '/media/' + e, thumb: '/thumb/' + encodeURIComponent(path.basename(l[0])) + '?src=media&w=320&p=' + e, video: VID_RE.test(l[0]) }; }) });   // v2.40 dir = folder path; v2.41 ori = p|l|s from RS-SCENE-DIMS (null while unprobed / video)
@@ -1745,7 +1766,7 @@ resolveFrameImages(state); resolveOverlays(state); resolveFx(state); state.chrom
 setTimeout(directorOnModeChange, 2000);   // v1.2: start the current mode's audio director after boot
 server.listen(PORT, () => {
   console.log('====================================================');
-  console.log('  Roomscape Conductor  v5.03 (community v1.03)');   /* RS-SEC v1.01 (F14): the banner had been left at v4.74/v0.50 */
+  console.log('  Roomscape Conductor  v5.05 (community v1.05)');   /* RS-SEC v1.01 (F14): the banner had been left at v4.74/v0.50 */
   console.log('  modules : ' + LIB_MODULES.join(', ') + '  (conductor-lib @ ' + LIB_DIR + ')');
   console.log('  app   : http://localhost:' + PORT + '/  (Play & Design' + (HAS_APP ? '' : ' — WARNING: app.html NOT FOUND in APP_DIR') + ')');
   console.log('  app   : ' + APP_DIR);
@@ -5521,6 +5542,28 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       });
       return out;
     }
+    /* v1.05 (I3): size the pack BEFORE reading a byte of it. walk() above reads
+       every file into RAM; the import path has had a 100 MB cap since 1.00 but
+       the EXPORT path — the unauthenticated half, since it answers GET — had
+       neither a cap nor a budget. A pack with a few hundred MB of video (entirely
+       normal here) meant one anonymous request allocated multiples of that and
+       blocked the event loop through deflateRawSync, stalling every wall TV. */
+    var EXPORT_CAP = 200 * 1024 * 1024;
+    function packSize(dir, depth) {   // bytes + count, stat-only, no reads
+      var total = 0, count = 0;
+      if ((depth || 0) > 12) return { bytes: total, files: count };
+      fs.readdirSync(dir, { withFileTypes: true }).forEach(function (en) {
+        if (en.name.charAt(0) === '.') return;
+        var abs = path.join(dir, en.name);
+        if (en.isDirectory()) { var s = packSize(abs, (depth || 0) + 1); total += s.bytes; count += s.files; }
+        else if (en.isFile()) { try { total += fs.statSync(abs).size; count++; } catch (e) {} }
+      });
+      return { bytes: total, files: count };
+    }
+    /* v1.05 (I3): single-flight. Concurrent exports of the same pack used to
+       multiply the allocation; now the first builder wins and the rest wait on
+       its buffer. Same shape as media.js's buildManifestCached. */
+    var EXPORT_INFLIGHT = Object.create(null);
     function slugify(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); }
 
     /* ---- EXPORT ---- */
@@ -5530,18 +5573,63 @@ directorOnModeChange = function () { try { modeMusicFollow(); } catch (e) {} ret
       if (!pdir) return real.json(400, { ok: false, error: 'bad pack id (allowed: a-z 0-9 -)' });
       var st = null; try { st = fs.statSync(pdir); } catch (e) {}
       if (!st || !st.isDirectory()) return real.json(404, { ok: false, error: 'no such pack', pack: id });
+
+      /* One waiter = one pending response. Every waiter must be answered exactly
+         once, on success AND on failure, or its client hangs until it times out. */
+      var waiter = {
+        ok: function (buf, nfiles) {
+          real.writeHead(200, corsHdr(req, { 'Content-Type': 'application/zip',
+                                'Content-Disposition': 'attachment; filename="' + id + '.roomscape-theme.zip"',
+                                'Content-Length': buf.length,
+                                'Cache-Control': 'no-store' }));
+          real.end(buf);
+          console.log('[theme-zip] exported ' + id + ' (' + nfiles + ' file(s), ' + buf.length + ' bytes)');
+        },
+        fail: function (err) {
+          real.json(500, { ok: false, error: String((err && err.message) || err).slice(0, 200), pack: id });
+        }
+      };
+
       try {
-        var files = walk(pdir, id, []);              // entry names prefixed <pack>/
-        if (!files.some(function (f) { return f.name === id + '/theme.json'; }))
-          return real.json(400, { ok: false, error: 'pack has no theme.json', pack: id });
-        var buf = zip.writeZip(files);
-        real.writeHead(200, corsHdr(req, { 'Content-Type': 'application/zip',
-                              'Content-Disposition': 'attachment; filename="' + id + '.roomscape-theme.zip"',
-                              'Content-Length': buf.length,
-                              'Cache-Control': 'no-store' }));
-        real.end(buf);
-        console.log('[theme-zip] exported ' + id + ' (' + files.length + ' file(s), ' + buf.length + ' bytes)');
-      } catch (e) { real.json(500, { ok: false, error: String(e && e.message).slice(0, 200) }); }
+        /* v1.05 (I3): refuse oversized packs on stats alone, before any read. */
+        var sz = packSize(pdir, 0);
+        if (sz.bytes > EXPORT_CAP) {
+          console.log('[theme-zip] refused ' + id + ': ' + sz.bytes + ' bytes over the ' + EXPORT_CAP + ' export cap');
+          return real.json(413, { ok: false, error: 'pack is too large to export over HTTP ('
+            + Math.round(sz.bytes / 1048576) + ' MB, cap ' + Math.round(EXPORT_CAP / 1048576)
+            + ' MB) — copy the themes/' + id + ' folder directly instead', pack: id, bytes: sz.bytes });
+        }
+
+        var pending = EXPORT_INFLIGHT[id];
+        if (pending) { pending.waiters.push(waiter); return; }   // someone is already building this one
+        var flight = EXPORT_INFLIGHT[id] = { waiters: [waiter] };
+
+        function finish(err, buf, nfiles) {
+          delete EXPORT_INFLIGHT[id];
+          var ws = flight.waiters; flight.waiters = [];
+          ws.forEach(function (w) {
+            try { err ? w.fail(err) : w.ok(buf, nfiles); } catch (e) {}
+          });
+        }
+
+        var files;
+        try {
+          files = walk(pdir, id, []);              // entry names prefixed <pack>/
+          if (!files.some(function (f) { return f.name === id + '/theme.json'; })) {
+            delete EXPORT_INFLIGHT[id];
+            return real.json(400, { ok: false, error: 'pack has no theme.json', pack: id });
+          }
+        } catch (e) { return finish(e); }
+
+        /* v1.05 (I3): hand the build to the next tick so a large pack cannot
+           block the event loop inside the request itself. writeZip is still
+           synchronous internally — the cap above is what bounds its cost — but
+           yielding first lets in-flight video ranges drain before we start. */
+        setImmediate(function () {
+          try { finish(null, zip.writeZip(files), files.length); }
+          catch (e) { finish(e); }
+        });
+      } catch (e) { delete EXPORT_INFLIGHT[id]; real.json(500, { ok: false, error: String(e && e.message).slice(0, 200) }); }
     });
 
     /* ---- IMPORT ---- */

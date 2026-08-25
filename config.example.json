@@ -1,7 +1,8 @@
 {
   "_comment": "Copy to config.json. Loaded at boot; absent file = defaults. NO SECRETS — tokens go in .env.",
 
-  "atRestMode": "atrest",
+  "_atRestMode": "The mode the room falls back to. MUST be the id of a mode that exists in your profiles store — the shipped starter store provides 'dining'. Change this only after creating the mode you name here, or the panic button has nowhere to go.",
+  "atRestMode": "dining",
 
   "layout": {
     "orientation": "portrait",
@@ -18,7 +19,9 @@
   },
 
   "ha": {
+    "_note": "tvs/lights are normally written by the setup wizard, not by hand. 'lights' is a FLAT list read by the Lights tab and POST /api/ha/lightscene; 'lightZones' is the named-zone map used by the Lighting lens. Both are live keys — an empty 'lights' makes POST /api/ha/lightscene answer 'no lights configured'. NOTE the setup wizard writes lightZones only, never lights — set that one by hand.",
     "tvs": { "L1": "", "L2": "", "L3": "", "R1": "", "R2": "", "R3": "" },
+    "lights": ["light.example_ceiling", "light.example_lamp_1"],
     "tvQuirks": { "media_player.example_frame_tv": "samsung-frame" },
     "lightZones": {
       "main": ["light.example_ceiling"],
@@ -40,7 +43,6 @@
 
   "edges": [],
 
-  "rooms": [
-    { "id": "main", "name": "Main Room", "icon": "🛋" }
-  ]
+  "_rooms": "The app ALWAYS shows a synthetic first pill called 'This room'. Anything listed here is added after it, so do not add a room for the main wall or you get two pills for it. Leave this empty unless you genuinely have a second room.",
+  "rooms": []
 }

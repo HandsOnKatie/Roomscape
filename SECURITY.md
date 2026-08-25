@@ -1,6 +1,6 @@
 # Security model — read before deploying
 
-**Version 1.03**
+**Version 1.05**
 
 ## What Roomscape is, security-wise
 
@@ -110,6 +110,14 @@ rotate it any time under **⚙ Settings → System → 🔑 Admin token…**.
 - **WebSocket connections themselves** (frame kiosks): upgrades need no token to
   *receive* state. Gating that would break every wall TV on each restart for no
   mutation-protection gain — and pushing state is separately gated, above.
+
+  Because that surface is open, the receive path is defensive about resources.
+  Since **v1.05**: a per-client cap on reassembled fragments (a tokenless client
+  could previously send unlimited ~4 MB frames with `FIN=0` and never finish,
+  growing memory without bound until the process was OOM-killed), the RFC 6455
+  continuation rules are enforced, unmasked client frames are refused, and no
+  more than **64** sockets may be connected at once. A misbehaving client is
+  disconnected with the reason logged.
 - **There is no localhost exemption.** Behind Docker port-mapping the client
   address the server sees is the Docker bridge, not the real caller — a
   localhost bypass would quietly become an everyone bypass. Local scripts should
@@ -141,6 +149,14 @@ one shared token".
    shared) but it does mean a theme pack is *not* a place to keep anything you
    would not hand to the whole network.
 
+   Since **v1.05** the *cost* of that route is bounded, which it previously was
+   not: the pack is measured with `stat` before a single byte is read, anything
+   over **200 MB** is refused with a 413 telling you to copy the folder instead,
+   concurrent requests for the same pack share one build rather than each
+   allocating their own, and the build yields to the event loop first. Before
+   that, one anonymous request against a pack full of 4K video read the whole
+   thing into memory and deflated it synchronously — stalling every wall TV.
+
 3. **The open profile GETs are the known read-surface.** `GET /api/profiles`
    redacts exactly one thing: the Music Assistant token. Everything else is
    served to any unauthenticated LAN client — your **Home Assistant entity ids**
@@ -153,7 +169,8 @@ one shared token".
 
 4. **`deploy/edge.js` has no authentication at all** and answers every request
    with `Access-Control-Allow-Origin: *`. It runs on the display PCs (default
-   port 8093) to mirror media and manage the kiosk. `POST /edge/screens`
+   port 8090 — `PORT` in `deploy/immersion-edge.service`) to mirror media and
+   manage the kiosk. `POST /edge/screens`
    **rewrites `~/.xinitrc` and restarts the kiosk session** — unauthenticated
    remote code execution in every meaningful sense, reachable from any device
    on the same LAN segment and from any web page open on that LAN. It exists
@@ -162,7 +179,10 @@ one shared token".
    - keep it on a trusted LAN segment (ideally a separate VLAN with only the
      Conductor able to reach it),
    - bind it to the kiosk's LAN interface rather than `0.0.0.0` if you can,
-   - and never, under any circumstances, expose port 8093 beyond that segment.
+   - and never, under any circumstances, expose port 8090 on a display PC
+     beyond that segment. (The Conductor also defaults to 8090; the edge
+     service is a *separate* process on each display PC listening on that
+     port. Firewall it on every kiosk machine, not just the Conductor host.)
 
 ## CORS
 

@@ -1,6 +1,6 @@
 # FAQ
 
-**Doc version 1.03.** Questions people ask before, during and after installing. If yours isn't here, check [REFERENCE.md](REFERENCE.md) (the deep dive) or [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (when something's broken).
+**Doc version 1.05.** Questions people ask before, during and after installing. If yours isn't here, try [GUIDE.md](GUIDE.md) (the guided tour), [REFERENCE.md](REFERENCE.md) (the deep dive) or [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (when something's broken).
 
 ---
 
@@ -125,4 +125,4 @@ No, and that's the biggest gap. Smoke is HTTP-only; UI flows are checked by cana
 In order: theme packs (the community flywheel), hardware reports from layouts that aren't six portrait TVs, landscape support, and a browser test rig.
 
 **Has the code been security-reviewed?**
-Yes — two independent adversarial audits before release, which found and fixed several critical issues including a secret-leaking static handler and an unauthenticated WebSocket takeover path. See the v1.01–v1.03 entries in [CHANGELOG.md](../CHANGELOG.md). It's still a LAN-only tool by design; the audits sharpened it, they didn't make it internet-safe.
+Yes — three independent adversarial reviews, a documentation-inventory pass, and a full pre-publication review, all before release. Between them they found and fixed several critical issues including a secret-leaking static handler, an unauthenticated WebSocket takeover path, an admin token leaking through an open log endpoint, and a stored-XSS hole in the scoreboard. See the v1.01–v1.04 entries in [CHANGELOG.md](../CHANGELOG.md) and the [audit report](SECURITY-AUDIT-2026-08.md). It's still a LAN-only tool by design; the reviews sharpened it, they didn't make it internet-safe.

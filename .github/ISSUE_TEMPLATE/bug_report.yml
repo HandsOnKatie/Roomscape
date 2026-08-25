@@ -1,0 +1,106 @@
+name: Bug report
+description: Something in RoomScape doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time.
+
+        **Before you paste anything:** `/api/health` is safe to share, but
+        `/api/log` and `/api/profiles` are not — the log can contain filesystem
+        paths and Home Assistant entity ids, and the profiles dump contains your
+        entity map, your schedule and your NFC tag ids. **Redact those before
+        pasting**, or describe what you saw instead.
+
+        Never paste your admin token, `HA_TOKEN` or `MA_TOKEN` anywhere.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+      placeholder: |
+        I tapped a mode and the lights changed, but the TVs stayed on the
+        previous scene until I reloaded the frame pages.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: The smallest sequence of steps that shows the problem.
+      placeholder: |
+        1. Open the app, Play → Modes
+        2. Tap ▶ on any mode
+        3. Watch the wall
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >
+        From ⚙ Settings → 🛠 System (the status line), or `curl /api/health`.
+        Both numbers please — they are deliberately different.
+      placeholder: "repo 1.05 / conductor 5.05"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is the Conductor running?
+      options:
+        - Docker (docker compose)
+        - Bare Node
+        - Something else (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: >
+        Roughly what the room is. This matters more than you'd think — most
+        rough edges in RoomScape are places where a non-reference layout
+        behaves differently.
+      value: |
+        - Screens / frames:
+        - Home Assistant: yes / no
+        - Music Assistant: yes / no
+        - Display PCs (kiosk kit): yes / no
+        - Edge mirror installed: yes / no
+        - Browser showing the frames:
+    validations:
+      required: true
+
+  - type: textarea
+    id: health
+    attributes:
+      label: /api/health output
+      description: >
+        `curl http://<your-server>:8090/api/health` — safe to paste as-is.
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >
+        `docker logs --tail 100 roomscape`, or the console output on bare Node.
+        **Redact paths and entity ids you'd rather not publish.**
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked [TROUBLESHOOTING.md](../blob/main/docs/TROUBLESHOOTING.md)
+          required: true
+        - label: I have removed any tokens, entity ids or paths I don't want public
+          required: true

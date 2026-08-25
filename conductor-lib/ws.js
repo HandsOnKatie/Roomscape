@@ -1,5 +1,15 @@
 /* ===================================================================
-   conductor-lib/ws.js  v1.1
+   conductor-lib/ws.js  v1.2
+   v1.2 (v1.05, I1+I2): the receive loop grew three teeth it was missing.
+     - client.frag had no cumulative cap. WS_MAX_BUF capped the receive buffer
+       and the DECLARED frame length, but a frame that parsed was spliced out of
+       buf and appended to frag, so a tokenless client sending just-under-4MB
+       frames with FIN=0 and never finishing could allocate without limit.
+     - continuation frames were not policed: a text frame mid-fragment, or a
+       continuation with nothing to continue, were both accepted.
+     - unmasked client frames were accepted although RFC 6455 5.1 requires a
+       client to mask. Now refused.
+     Plus WS_MAX_CLIENTS (64) refuses new upgrades past a sane ceiling.
    v1.1 (RS-SEC v1.01, F2): the upgrade handshake gained two checks.
      1. ORIGIN. Browsers ALWAYS send Origin on a WebSocket handshake; native
         clients and kiosk shells may omit it. So: absent Origin -> allowed
@@ -76,37 +86,96 @@ module.exports = function (ctx) {
     const admin = (typeof ctx.adminToken === 'function') ? String(ctx.adminToken() || '') : '';
     const canMutate = (typeof ctx.authDisabled === 'function' && ctx.authDisabled())
       || (!!admin && !!tok && tok.length === admin.length && crypto.timingSafeEqual(Buffer.from(tok), Buffer.from(admin)));
-    const client = { sock, buf: Buffer.alloc(0), frag: [], canMutate: canMutate }; clients.add(client);
+    /* v1.05 (I2): cap concurrent sockets. A real room has one consumer per frame
+       plus the app — single digits. An unauthenticated client opening thousands
+       would otherwise get a full JSON.stringify(state) each on every bump() and
+       on the 2s clock tick, with only the 45s heartbeat reaper to stop it — and
+       a socket that keeps reading never trips that. Refuse politely instead. */
+    if (clients.size >= WS_MAX_CLIENTS) {
+      console.log('[ws] REJECTED upgrade: ' + clients.size + ' clients already connected (cap ' + WS_MAX_CLIENTS + ')');
+      try { sock.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); } catch (e) {}
+      try { sock.destroy(); } catch (e) {}
+      return;
+    }
+    const client = { sock, buf: Buffer.alloc(0), frag: [], fragLen: 0, fragOpen: false, canMutate: canMutate }; clients.add(client);
     wsSend(sock, { ie: true, type: 'state', state: ctx.state(), t: Date.now() });
     sock.on('data', (c) => onWsData(client, c));
     sock.on('close', () => clients.delete(client));
     sock.on('error', () => { clients.delete(client); try { sock.destroy(); } catch (e) {} });
   }
   const WS_MAX_BUF = 4 * 1024 * 1024;   // v2.52: cap per-client receive buffer / declared frame length
+  const WS_MAX_CLIENTS = 64;            // v1.05 (I2): concurrent sockets — far above the ~7 a real room uses
+
+  /* v1.05 (I1): one place to hang up on a misbehaving client.
+     Send a proper close frame (1009 "message too big") and end() before
+     destroy(): a bare destroy() can leave a peer that is not writing unaware it
+     has been disconnected until its own timeout, which makes the hang-up look
+     like a hang. Then destroy on a short unref'd timer so a peer that ignores
+     the close still goes away. */
+  function dropClient(client, why) {
+    console.log('[ws] dropping client' + (client.frame ? ' ' + client.frame : '') + ': ' + why);
+    clients.delete(client);
+    try {
+      var reason = Buffer.from(String(why).slice(0, 120), 'utf8');
+      var body = Buffer.alloc(2 + reason.length);
+      body.writeUInt16BE(1009, 0);                     // 1009 = message too big
+      reason.copy(body, 2);
+      client.sock.write(encodeFrame(body, 0x8));
+    } catch (e) {}
+    try { client.sock.end(); } catch (e) {}
+    try {
+      var t = setTimeout(function () { try { client.sock.destroy(); } catch (e) {} }, 250);
+      if (t.unref) t.unref();
+    } catch (e) { try { client.sock.destroy(); } catch (e2) {} }
+  }
+
   function onWsData(client, chunk) {
     client.awaitingPong = 0;   // v2.52: ANY inbound traffic (incl. pongs) proves the client is alive
     client.buf = Buffer.concat([client.buf, chunk]); let buf = client.buf;
     if (buf.length > WS_MAX_BUF) {   // v2.52: a corrupt/malicious frame can't grow memory unbounded
-      console.log('[ws] receive buffer over cap — dropping client', client.frame || '');
-      try { client.sock.destroy(); } catch (e) {} clients.delete(client); return;
+      return dropClient(client, 'receive buffer over cap');
     }
     while (buf.length >= 2) {
       const b0 = buf[0], b1 = buf[1], fin = (b0 & 0x80) !== 0, opcode = b0 & 0x0f, masked = (b1 & 0x80) !== 0;
       let len = b1 & 0x7f, offset = 2;
       if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); offset = 4; }
       else if (len === 127) { if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); offset = 10; }
-      if (len > WS_MAX_BUF) { console.log('[ws] oversized frame declared — dropping client', client.frame || ''); try { client.sock.destroy(); } catch (e) {} clients.delete(client); return; }   // v2.52
-      let mask; if (masked) { if (buf.length < offset + 4) break; mask = buf.slice(offset, offset + 4); offset += 4; }
+      if (len > WS_MAX_BUF) { client.buf = buf; return dropClient(client, 'oversized frame declared'); }   // v2.52
+      /* v1.05 (I1): RFC 6455 §5.1 — a client MUST mask. An unmasked client frame
+         is either a broken implementation or someone hand-rolling an attack; we
+         used to read the bit and then accept either way. */
+      if (!masked) { client.buf = buf; return dropClient(client, 'unmasked client frame (RFC 6455 requires masking)'); }
+      let mask; if (buf.length < offset + 4) break; mask = buf.slice(offset, offset + 4); offset += 4;
       if (buf.length < offset + len) break;
       let payload = buf.slice(offset, offset + len);
-      if (masked) { const o = Buffer.alloc(len); for (let i = 0; i < len; i++) o[i] = payload[i] ^ mask[i & 3]; payload = o; }
+      { const o = Buffer.alloc(len); for (let i = 0; i < len; i++) o[i] = payload[i] ^ mask[i & 3]; payload = o; }
       buf = buf.slice(offset + len);
       if (opcode === 0x8) { try { client.sock.write(encodeFrame(payload, 0x8)); } catch (e) {} try { client.sock.end(); } catch (e) {} clients.delete(client); return; }
       else if (opcode === 0x9) { try { client.sock.write(encodeFrame(payload, 0xA)); } catch (e) {} }
-      else if (opcode === 0x1 || opcode === 0x0) { client.frag.push(payload); if (fin) { const full = Buffer.concat(client.frag).toString('utf8'); client.frag = []; ctx.handleClientMessage(client, full); } }
+      else if (opcode === 0x1 || opcode === 0x0) {
+        /* v1.05 (I1): the fragment accumulator was the hole. WS_MAX_BUF bounds the
+           receive buffer and the DECLARED frame length, but once a frame parsed it
+           was spliced out of buf and pushed onto client.frag, which had no cap at
+           all. A tokenless client (upgrades are deliberately open so kiosk frames
+           work, and a non-browser sends no Origin) could send frames of just under
+           4 MB with FIN=0 forever: each one passed every check, emptied buf, and
+           accumulated. ~1000 frames = ~4 GB resident and an OOM kill. Cap the
+           running total, and police the continuation state machine while here. */
+        if (opcode === 0x1 && client.fragOpen) { client.buf = buf; return dropClient(client, 'new text frame arrived mid-fragment'); }
+        if (opcode === 0x0 && !client.fragOpen) { client.buf = buf; return dropClient(client, 'continuation frame with nothing to continue'); }
+        client.fragOpen = !fin;   // a zero-length first fragment is legal, so track state, not byte count
+        client.fragLen += payload.length;
+        if (client.fragLen > WS_MAX_BUF) { client.buf = buf; return dropClient(client, 'fragmented message over cap'); }
+        client.frag.push(payload);
+        if (fin) {
+          const full = Buffer.concat(client.frag).toString('utf8');
+          client.frag = []; client.fragLen = 0;
+          ctx.handleClientMessage(client, full);
+        }
+      }
     }
     client.buf = buf;
   }
 
-  return { wsAccept, encodeFrame, wsSend, handleUpgrade, onWsData, WS_MAX_BUF };
+  return { wsAccept, encodeFrame, wsSend, handleUpgrade, onWsData, WS_MAX_BUF, WS_MAX_CLIENTS };
 };

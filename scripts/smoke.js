@@ -21,8 +21,8 @@
          and the at-rest id; the served static allow-list no longer carries
          /control.html or /editor.html; a ping over the WS gets a pong; the
          weather poll reads the live pollMinutes (source canary).
-     G6  version coherence — banner v5.03 (community v1.03), /api/health
-         version 5.03 + repo 1.03, package.json 1.0.3, README/SECURITY/
+     G6  version coherence — banner v5.05 (community v1.05), /api/health
+         version 5.05 + repo 1.05, package.json 1.0.5, README/SECURITY/
          ARCHITECTURE/CHANGELOG headers all read 1.03.
    v1.9 (RS-SEC v1.02, frontend pass): 24 SERVED-FILE canaries in boot 1. There
    is no browser here, so the XSS and wiring fixes are proved by asserting on
@@ -265,6 +265,27 @@ function wsSendText(socket, obj) {
   for (let i = 0; i < len; i++) masked[i] = payload[i] ^ mask[i & 3];
   try { socket.write(Buffer.concat([header, mask, masked])); } catch (e) {}
 }
+/* v2.3 (I1): a raw masked frame with FIN under our control, so the fragment
+   attack can actually be attempted rather than merely asserted about in source.
+   opcode 0x1 = text (first fragment), 0x0 = continuation. */
+function wsSendFragment(socket, bytes, opcode, fin) {
+  const payload = Buffer.alloc(bytes, 0x61);           // 'a' — content is irrelevant
+  const mask = crypto.randomBytes(4);
+  const b0 = (fin ? 0x80 : 0x00) | opcode;
+  let header;
+  if (bytes < 126) { header = Buffer.alloc(2); header[0] = b0; header[1] = 0x80 | bytes; }
+  else if (bytes < 65536) { header = Buffer.alloc(4); header[0] = b0; header[1] = 0x80 | 126; header.writeUInt16BE(bytes, 2); }
+  else { header = Buffer.alloc(10); header[0] = b0; header[1] = 0x80 | 127; header.writeUInt32BE(0, 2); header.writeUInt32BE(bytes, 6); }
+  const masked = Buffer.alloc(bytes);
+  for (let i = 0; i < bytes; i++) masked[i] = payload[i] ^ mask[i & 3];
+  try { return socket.write(Buffer.concat([header, mask, masked])); } catch (e) { return false; }
+}
+/* v2.3 (I1): the same, deliberately UNMASKED — illegal from a client per RFC 6455. */
+function wsSendUnmasked(socket, text) {
+  const payload = Buffer.from(text, 'utf8');
+  const header = Buffer.alloc(2); header[0] = 0x81; header[1] = payload.length;   // no mask bit
+  try { return socket.write(Buffer.concat([header, payload])); } catch (e) { return false; }
+}
 // oversize POST: the server answers 413 mid-upload and then hangs up, so a
 // transport error after a 413 is expected — report whichever arrives first.
 function postBig(p, bytes, port) {
@@ -492,8 +513,8 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     check('GET /api/ha/entities with token + no HA -> 200 {ok:false,"ha not configured"}',
       he1.code === 200 && !!(hej && hej.ok === false && hej.error === 'ha not configured'),
       'code ' + he1.code + ' ' + he1.body.slice(0, 160));
-    check('boot banner reads v5.03 (community v1.03)',
-      bootLog.indexOf('Roomscape Conductor  v5.03 (community v1.03)') >= 0, bootLog.slice(0, 400));
+    check('boot banner reads v5.05 (community v1.05)',
+      bootLog.indexOf('Roomscape Conductor  v5.05 (community v1.05)') >= 0, bootLog.slice(0, 400));
 
     // ================= v1.8 (RS-SEC v1.01) =================
 
@@ -585,6 +606,58 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     const wsSame = await wsConnect('/', { Origin: 'http://127.0.0.1:' + PORT }, PORT);
     check('F2 a same-origin WS upgrade is accepted', wsSame.code === 101, 'code ' + wsSame.code);
     if (wsSame.socket) { try { wsSame.socket.destroy(); } catch (e) {} }
+
+    /* ---- v2.3 (I1): the unbounded-fragment attack, actually attempted ----
+       Before 1.05 client.frag had no cumulative cap: a TOKENLESS socket could
+       send frames of just under WS_MAX_BUF with FIN=0 forever, each one passing
+       every check, emptying the receive buffer and accumulating in memory. This
+       sends 1 MB continuation fragments without ever setting FIN and requires
+       the server to hang up rather than keep swallowing them. */
+    const wsFrag = await wsConnect('/', {}, PORT);
+    if (wsFrag.socket) {
+      let closed = false;
+      wsFrag.socket.on('close', () => { closed = true; });
+      wsFrag.socket.on('error', () => { closed = true; });
+      wsSendFragment(wsFrag.socket, 1024 * 1024, 0x1, false);        // first fragment, FIN=0
+      for (let i = 0; i < 8 && !closed; i++) {
+        wsSendFragment(wsFrag.socket, 1024 * 1024, 0x0, false);      // continuations, never FIN
+        await sleep(120);
+      }
+      await sleep(400);
+      check('I1 an endless fragmented WS message is cut off, not accumulated',
+        closed, 'the socket is still open after ~9 MB of unfinished fragments');
+      check('I1 the fragment cap is logged with a reason',
+        bootLog.indexOf('fragmented message over cap') >= 0, bootLog.slice(-600));
+      try { wsFrag.socket.destroy(); } catch (e) {}
+    } else check('I1 an endless fragmented WS message is cut off, not accumulated', false, 'no socket: ' + JSON.stringify(wsFrag));
+
+    /* v2.3 (I1): RFC 6455 5.1 — a client MUST mask. We used to read the bit and
+       accept either way. */
+    const wsUnmasked = await wsConnect('/', {}, PORT);
+    if (wsUnmasked.socket) {
+      let umClosed = false;
+      wsUnmasked.socket.on('close', () => { umClosed = true; });
+      wsUnmasked.socket.on('error', () => { umClosed = true; });
+      /* wsConnect leaves the socket paused (no 'data' listener), and a paused
+         socket never processes the peer's FIN — so without this the close is
+         invisible to the test even though the server sent it. */
+      wsUnmasked.socket.resume();
+      wsSendUnmasked(wsUnmasked.socket, '{"ie":true,"type":"ping"}');
+      await sleep(700);
+      check('I1 an unmasked client frame is refused (RFC 6455 requires masking)',
+        bootLog.indexOf('unmasked client frame') >= 0,
+        'the server accepted an unmasked frame; client closed = ' + umClosed);
+      check('I1 a dropped client is closed politely, not just destroyed',
+        umClosed, 'the peer never observed the close — dropClient should end() after a close frame');
+      try { wsUnmasked.socket.destroy(); } catch (e) {}
+    } else check('I1 an unmasked client frame is refused (RFC 6455 requires masking)', false, 'no socket');
+
+    /* v2.3 (I1): a legitimately fragmented message must still be reassembled —
+       the cap must not have broken normal multi-frame traffic. */
+    check('I1 ws.js still reassembles an honest fragmented message',
+      /if \(fin\) \{\s*\n?\s*const full = Buffer\.concat\(client\.frag\)/.test(
+        fs.readFileSync(path.join(ROOT, 'conductor-lib', 'ws.js'), 'utf8')),
+      'the FIN reassembly path is gone');
 
     // ---- F14: an oversize body gets 413, not a hung connection ----
     const big = await postBig('/api/state', 2.5 * 1024 * 1024);
@@ -799,16 +872,18 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     // G6: /api/health carries the version
     const health = await get('/api/health');
     let hj = null; try { hj = JSON.parse(health.body); } catch (e) {}
-    check('G6 /api/health reports version 5.03 / repo 1.03',
-      !!(hj && hj.version === '5.03' && hj.repo === '1.03'), health.body.slice(0, 200));
+    check('G6 /api/health reports version 5.05 / repo 1.05',
+      !!(hj && hj.version === '5.05' && hj.repo === '1.05'), health.body.slice(0, 200));
 
     // versions (rule 11: never change behaviour without changing the version)
-    check('v1.02 the five touched frontend files carry bumped versions',
-      /app\.js\)  v3\.84/.test(fjs.body) && /engine\.js\)  v0\.92/.test(fengine.body)
-        && /fx\.js\)  v1\.62/.test(ffx.body) && fframe.body.indexOf('frame page — v1.3') >= 0
+    /* v1.04: app.js -> v3.85 (the two shadowed-declaration fixes) and fx.js ->
+       v1.63 (scoreboard escaping). engine/frame/scores were not touched. */
+    check('the five frontend files carry the versions their last change earned',
+      /app\.js\)  v3\.85/.test(fjs.body) && /engine\.js\)  v0\.92/.test(fengine.body)
+        && /fx\.js\)  v1\.63/.test(ffx.body) && fframe.body.indexOf('frame page — v1.3') >= 0
         && fscores.body.indexOf('scoreboard — v1.1') >= 0,
-      'app ' + /app\.js\)  v3\.84/.test(fjs.body) + ', engine ' + /engine\.js\)  v0\.92/.test(fengine.body)
-        + ', fx ' + /fx\.js\)  v1\.62/.test(ffx.body) + ', frame ' + (fframe.body.indexOf('frame page — v1.3') >= 0)
+      'app ' + /app\.js\)  v3\.85/.test(fjs.body) + ', engine ' + /engine\.js\)  v0\.92/.test(fengine.body)
+        + ', fx ' + /fx\.js\)  v1\.63/.test(ffx.body) + ', frame ' + (fframe.body.indexOf('frame page — v1.3') >= 0)
         + ', scores ' + (fscores.body.indexOf('scoreboard — v1.1') >= 0));
   }
   child.kill();
@@ -1179,19 +1254,179 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
     const secmd = fs.readFileSync(path.join(ROOT, 'SECURITY.md'), 'utf8');
     const archmd = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');
-    check('G6 package.json is 1.0.3', pkg.version === '1.0.3', 'version ' + pkg.version);
-    check('G6 conductor.js header reads v5.03 (community release v1.03)',
-      condSrc.indexOf('Conductor backend  v5.03 (community release v1.03)') >= 0, 'header version stale');
-    check('G6 README says Version: 1.03', /\*\*Version:\s*1\.03\*\*/.test(readme), 'README version line stale');
-    check('G6 CHANGELOG has a 1.03 entry at the top',
-      /^# Changelog\s*\n\s*## 1\.03 /m.test(changelog), 'no 1.03 entry heading the changelog');
-    check('G6 SECURITY.md says Version 1.03', /\*\*Version 1\.03\*\*/.test(secmd), 'SECURITY.md version stale');
-    check('G6 docs/ARCHITECTURE.md header reads 1.03 / conductor v5.03',
-      /\*\*Doc version 1\.03\*\*/.test(archmd) && archmd.indexOf('conductor v5.03') >= 0 && archmd.indexOf('Repo: v1.03') >= 0,
+    check('G6 package.json is 1.0.5', pkg.version === '1.0.5', 'version ' + pkg.version);
+    check('G6 conductor.js header reads v5.05 (community release v1.05)',
+      condSrc.indexOf('Conductor backend  v5.05 (community release v1.05)') >= 0, 'header version stale');
+    check('G6 README says Version: 1.05', /\*\*Version:\s*1\.05\*\*/.test(readme), 'README version line stale');
+    check('G6 CHANGELOG has a 1.05 entry at the top',
+      /^# Changelog\s*\n\s*## 1\.05 /m.test(changelog), 'no 1.05 entry heading the changelog');
+    check('G6 SECURITY.md says Version 1.05', /\*\*Version 1\.05\*\*/.test(secmd), 'SECURITY.md version stale');
+    check('G6 docs/ARCHITECTURE.md header reads 1.05 / conductor v5.05',
+      /\*\*Doc version 1\.05\*\*/.test(archmd) && archmd.indexOf('conductor v5.05') >= 0 && archmd.indexOf('Repo: v1.05') >= 0,
       archmd.split('\n').slice(0, 4).join(' | '));
     check('G6 README project status no longer claims the shipped work is pending',
       readme.indexOf('still to land') < 0 && readme.indexOf('pre-release scaffold') < 0,
       'the stale "still to land" project-status paragraph is still there');
+
+    /* ---- v2.1 (H1-H3): the 1.04 pre-publication review fixes stay fixed. ----
+       H1/H2 are shadowed-declaration regressions: a second `function foo()` in
+       the SAME IIFE silently wins for every caller. Counting declarations is the
+       only cheap way to catch it — the file parses fine either way. */
+    const appSrc = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const fxSrc = fs.readFileSync(path.join(ROOT, 'fx.js'), 'utf8');
+    const declCount = (src, name) =>
+      (src.match(new RegExp('(^|[^.\\w])function\\s+' + name + '\\s*\\(', 'g')) || []).length;
+
+    check('H1 recordRecent() is declared exactly once (the mode-history one)',
+      declCount(appSrc, 'recordRecent') === 1,
+      'found ' + declCount(appSrc, 'recordRecent') + ' declarations — a shadow makes every mode launch POST profiles.json');
+    check('H1 the music helper is recordRecentMusic() and is actually called',
+      declCount(appSrc, 'recordRecentMusic') === 1 && /recordRecentMusic\(uri, label, image\)/.test(appSrc),
+      'the renamed music recents helper is missing or uncalled');
+    check('H2 edBase() is declared exactly once',
+      declCount(appSrc, 'edBase') === 1,
+      'found ' + declCount(appSrc, 'edBase') + ' declarations — the intro-lens shadow drops paintCanvas()');
+    check('H2 the surviving edBase() still repaints the canvas and pushes preview',
+      /function edBase\(fn\)\s*\{[^}]*paintCanvas\(\)[^}]*schedPreview\(\)/.test(appSrc),
+      'edBase() no longer calls paintCanvas() + schedPreview()');
+
+    /* H3: scoreboard escaping. Player name/nick are the least-privileged write in
+       the product and land on every wall TV, so no raw interpolation may return. */
+    const scorePanelSrc = (function () {
+      const i = fxSrc.indexOf('function scorePanel');
+      return i < 0 ? '' : fxSrc.slice(i, fxSrc.indexOf('function mapPanel', i));
+    })();
+    check('H3 scorePanel() exists and was located for inspection', scorePanelSrc.length > 200, 'could not slice scorePanel');
+    check('H3 scorePanel() escapes player name and nickname',
+      scorePanelSrc.indexOf("escA(w.name || '')") >= 0 && scorePanelSrc.indexOf('escA(w.nick)') >= 0
+        && scorePanelSrc.indexOf("escA(p.name || '')") >= 0 && scorePanelSrc.indexOf('escA(p.nick)') >= 0,
+      'a name/nick is still interpolated raw');
+    check('H3 scorePanel() leaves no unescaped name/nick interpolation behind',
+      !/\+ \((?:w|p)\.(?:name|nick)(?: \|\| '')?\)/.test(scorePanelSrc.replace(/escA\([^)]*\)/g, 'ESC')),
+      'found a bare (p.name || \'\') style interpolation');
+    check('H3 mapPanel() escapes the accent and the pano background',
+      /function mapPanel\(g0\)[^\n]*escA\(g0\.accent\)[^\n]*escA\(g0\.pano\)/.test(fxSrc),
+      'mapPanel still interpolates g0.accent / g0.pano raw');
+    check('H3 fx.js header records the v1.63 escaping pass',
+      /effects layer \(fx\.js\)\s+v1\.63/.test(fxSrc), 'fx.js header version stale');
+    check('H4 SECURITY.md gives the edge service port as 8090, not 8093',
+      secmd.indexOf('8093') < 0 && /port 8090 — `PORT` in `deploy\/immersion-edge\.service`/.test(secmd),
+      'SECURITY.md still references port 8093');
+
+    /* ---- v2.2 (H5-H9): documentation coherence. The 1.04 docs pass. ---- */
+    const docPath = (f) => path.join(ROOT, 'docs', f);
+    const docs = {};
+    ['GUIDE.md', 'INSTALL.md', 'HA-SETUP.md', 'REFERENCE.md', 'FAQ.md',
+      'TROUBLESHOOTING.md', 'THEMES.md', 'ARCHITECTURE.md'].forEach(function (f) {
+      try { docs[f] = fs.readFileSync(docPath(f), 'utf8'); } catch (e) { docs[f] = ''; }
+    });
+
+    check('H5 docs/GUIDE.md exists and is a real walkthrough, not a stub',
+      docs['GUIDE.md'].length > 8000 && /## The shape of the thing/.test(docs['GUIDE.md']),
+      'GUIDE.md missing or too short (' + docs['GUIDE.md'].length + ' bytes)');
+    check('H5 README points a newcomer at INSTALL then GUIDE',
+      /docs\/INSTALL\.md/.test(readme) && /docs\/GUIDE\.md/.test(readme),
+      'README doc index does not link both INSTALL and GUIDE');
+
+    /* H6: an unfilled clone placeholder in the quick-start is the single most
+       embarrassing thing a public repo can ship. Fail loudly on any of them. */
+    const placeholderFiles = ['README.md', 'docs/INSTALL.md', 'docs/HA-SETUP.md', 'CONTRIBUTING.md'];
+    const withPlaceholder = placeholderFiles.filter(function (f) {
+      try { return /<you>|<YOUR-?NAME>|YOUR_USERNAME_HERE|<username>/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')); }
+      catch (e) { return false; }
+    });
+    check('H6 no unfilled <you> style placeholders in the user-facing docs',
+      withPlaceholder.length === 0, 'placeholder still in: ' + withPlaceholder.join(', '));
+
+    /* H7: overlays/ must survive a fresh clone — .gitignore had `overlays/*`
+       with a negation for a .gitkeep that did not exist, so neither the folder
+       nor its README shipped. */
+    const gi = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+    check('H7 overlays/ ships in a fresh clone (.gitkeep present and un-ignored)',
+      fs.existsSync(path.join(ROOT, 'overlays', '.gitkeep')) && gi.indexOf('!overlays/.gitkeep') >= 0,
+      'overlays/.gitkeep ' + fs.existsSync(path.join(ROOT, 'overlays', '.gitkeep')));
+    check('H7 overlays/README.txt ships and no longer points at the removed editor.html',
+      fs.existsSync(path.join(ROOT, 'overlays', 'README.txt'))
+        && gi.indexOf('!overlays/README.txt') >= 0
+        && fs.readFileSync(path.join(ROOT, 'overlays', 'README.txt'), 'utf8').indexOf('editor.html') < 0,
+      'overlays/README.txt missing, ignored, or still references editor.html');
+
+    /* H8: the audit-count claim was stated three different ways across four files. */
+    const auditClaims = ['REFERENCE.md', 'FAQ.md'].filter(function (f) {
+      return /two independent (penetration )?(audits|adversarial audits)/i.test(docs[f] || '');
+    });
+    check('H8 no doc still claims "two independent audits"',
+      auditClaims.length === 0, 'stale audit count in: ' + auditClaims.join(', '));
+
+    /* H9: config.example.json must name an at-rest mode that the shipped
+       starter profiles store actually provides, or panic has nowhere to go. */
+    const cfgEx = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
+    const starter = JSON.parse(fs.readFileSync(path.join(ROOT, 'profiles.json'), 'utf8'));
+    check('H9 config.example.json atRestMode exists in the shipped starter profiles',
+      !!(starter.profiles && starter.profiles[cfgEx.atRestMode]),
+      'atRestMode "' + cfgEx.atRestMode + '" is not in profiles.json ('
+        + Object.keys((starter.profiles || {})).join(', ') + ')');
+    check('H9 config.example.json documents ha.lights, which is a live key',
+      !!(cfgEx.ha && Array.isArray(cfgEx.ha.lights)),
+      'ha.lights absent from config.example.json — /api/lightscene reads it');
+
+    /* ---- v2.3 (I1-I5): the 1.05 High fixes and the public-repo plumbing. ---- */
+    const wsSrc = fs.readFileSync(path.join(ROOT, 'conductor-lib', 'ws.js'), 'utf8');
+
+    check('I1 ws.js tracks a cumulative fragment length and caps it',
+      /client\.fragLen \+= payload\.length/.test(wsSrc)
+        && /client\.fragLen > WS_MAX_BUF/.test(wsSrc)
+        && /fragLen: 0/.test(wsSrc),
+      'the fragment accumulator is uncapped again — a tokenless client can OOM the conductor');
+    check('I1 ws.js resets the fragment state after a completed message',
+      /client\.frag = \[\]; client\.fragLen = 0;/.test(wsSrc),
+      'fragLen is not reset on FIN — it would leak across messages and false-trip the cap');
+    check('I1 ws.js policies the continuation state machine',
+      /new text frame arrived mid-fragment/.test(wsSrc)
+        && /continuation frame with nothing to continue/.test(wsSrc)
+        && /fragOpen/.test(wsSrc),
+      'continuation frames are unpoliced');
+    check('I2 ws.js caps concurrent clients and refuses past it',
+      /WS_MAX_CLIENTS\s*=\s*\d+/.test(wsSrc) && /clients\.size >= WS_MAX_CLIENTS/.test(wsSrc),
+      'no concurrent-socket cap');
+
+    check('I3 the theme export sizes the pack before reading any of it',
+      /function packSize\(/.test(condSrc) && /EXPORT_CAP/.test(condSrc)
+        && condSrc.indexOf('var sz = packSize(pdir, 0);') >= 0,
+      'GET /api/theme/export still walks and reads with no budget');
+    check('I3 the theme export refuses an oversized pack with 413',
+      /real\.json\(413, \{ ok: false, error: 'pack is too large to export/.test(condSrc),
+      'no 413 refusal path on the export route');
+    check('I3 the theme export single-flights and yields before building',
+      /EXPORT_INFLIGHT/.test(condSrc) && /setImmediate\(function \(\) \{\s*\n?\s*try \{ finish\(null, zip\.writeZip\(files\)/.test(condSrc),
+      'concurrent exports still each build their own zip on the request tick');
+    check('I3 every waiting exporter is answered on failure as well as success',
+      /err \? w\.fail\(err\) : w\.ok\(buf, nfiles\)/.test(condSrc),
+      'a failed build would leave queued clients hanging');
+
+    /* I4: CI must exist and must actually run the suite, or none of the above
+       protects anyone after the first merge. */
+    const wf = path.join(ROOT, '.github', 'workflows', 'smoke.yml');
+    check('I4 a CI workflow exists and runs the smoke suite',
+      fs.existsSync(wf) && /node scripts\/smoke\.js/.test(fs.readFileSync(wf, 'utf8')),
+      '.github/workflows/smoke.yml missing or does not run smoke.js');
+    check('I4 CI also guards against a tracked secret or state file',
+      fs.existsSync(wf) && /BEGIN \[A-Z \]\*PRIVATE KEY/.test(fs.readFileSync(wf, 'utf8')),
+      'the CI secret-scan step is missing');
+    check('I5 issue and PR templates ship',
+      fs.existsSync(path.join(ROOT, '.github', 'ISSUE_TEMPLATE', 'bug_report.yml'))
+        && fs.existsSync(path.join(ROOT, '.github', 'pull_request_template.md')),
+      '.github templates missing');
+    check('I5 package.json declares a license and author for a public repo',
+      pkg.license === 'MIT' && !!pkg.author,
+      'license ' + pkg.license + ', author ' + pkg.author);
+
+    /* I6: REFERENCE.md states the ENGINE version in its header, so it is a
+       factual claim that goes stale silently. The other doc headers are just
+       "reviewed as of", and are not asserted on. */
+    check('I6 docs/REFERENCE.md names the current conductor and repo version',
+      /\*\*Doc version 1\.05\*\* · Conductor v5\.05 · Repo v1\.05/.test(docs['REFERENCE.md']),
+      'REFERENCE.md header: ' + (docs['REFERENCE.md'] || '').split('\n')[2]);
 
     /* ---- v2.0 (G3): the repo must ship the folders the defaults point at ---- */
     check('G3 the repo ships media/.gitkeep and .gitignore keeps the folder but not its contents',

@@ -28,7 +28,7 @@
 - ✅ Pack loader (namespaced dot ids, in-place media serving, semantic lights, MA music-query fallback, sections).
 - ✅ Export/import over zip (pure-node, .trash safety net) + app UI (Theme packs sheet, badges, ctx-menu export).
 - ✅ Missing-media placeholders (loader-flagged + generic onerror).
-- ⏳ **Starter packs — waiting on D** (hand-built per locked decision 3): At Rest, Ocean Depths (demo pack ships, needs real media), Fireside Tavern, Game Night, Party. Storm Watch = build-it-yourself tutorial in THEMES.md.
+- ⏳ **Starter packs — not started** (hand-built, not AI-generated — see the licensing note below): At Rest, Ocean Depths (demo pack ships, needs real media), Fireside Tavern, Game Night, Party. Storm Watch = build-it-yourself tutorial in THEMES.md.
 - ➡ Later: export of Design-authored (non-pack) modes — needs media ref-walking of the host library ("pack builder").
 
 ## Phase 4 — First run & auth ✅ DONE in v1.00
@@ -38,7 +38,7 @@
 - ✅ Acceptance path proven by smoke v1.7 (63 checks): fresh boot → token printed → wizard hooks served → theme zip import round-trip → panic to at-rest.
 
 ## After v1.00
-- **Starter theme packs** (hand-produced content, per the maintainer's licensing rule): At Rest, Ocean Depths media, Fireside Tavern, Game Night, Party; Storm Watch tutorial in THEMES.md.
+- **Starter theme packs** (hand-produced content: packs shipped under this repo's name use media the maintainer can license, so they are made rather than scraped): At Rest, Ocean Depths media, Fireside Tavern, Game Night, Party; Storm Watch tutorial in THEMES.md.
 - Landscape screens (schema field exists; renderers assume portrait).
 - Pack builder: export Design-authored modes as theme packs (media ref-walking).
 - Remaining prependListener middleware blocks → router middleware concept.

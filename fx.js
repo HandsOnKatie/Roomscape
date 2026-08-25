@@ -1,5 +1,13 @@
 /* ===================================================================
-   The Immersion Engine — transition & effects layer (fx.js)  v1.62
+   The Immersion Engine — transition & effects layer (fx.js)  v1.63
+   v1.63 (RS-SEC v1.04 — scoreboard escaping):
+   (B9) scorePanel() and mapPanel() now escA() every value they interpolate:
+   player name, nickname, avatar initial, per-player colour, the mode accent and
+   the map background. The B7 sweep escaped the avatar photo URL and its ring
+   colour but left the names raw one line below, so anything that could add a
+   player — the least-privileged write in the product — could inject markup onto
+   every Frame TV the moment a score panel painted. Scores are now coerced with
+   unary + as well, so a non-numeric score cannot smuggle markup either.
    v1.62 (RS-SEC v1.02 — frontend security + bug pass):
    (B7) escA() attribute-escapes every WS-supplied media URL the render path
    pastes into a src="…" or a style="…url('…')" — pano/portrait scenes, effect
@@ -616,7 +624,7 @@
   function scorePanel(g0, state) {
     var S = state && state.scores;
     if (!S || !S.on || !Array.isArray(S.players) || !S.players.length) {
-      return '<div class="ie-panel"><div class="ie-ph" style="color:' + g0.accent + '">SCORE</div>' + bar('Red', 70, '#e0655f') + bar('Cyan', 55, '#5ec8c8') + bar('Green', 40, '#73c990') + bar('Gold', 25, '#e0b04a') + '</div>';
+      return '<div class="ie-panel"><div class="ie-ph" style="color:' + escA(g0.accent) + '">SCORE</div>' + bar('Red', 70, '#e0655f') + bar('Cyan', 55, '#5ec8c8') + bar('Green', 40, '#73c990') + bar('Gold', 25, '#e0b04a') + '</div>';   /* v1.63 (B9) */
     }
     var PAL = ['#c9a35e', '#5ec8c8', '#73c990', '#e0655f', '#b46cc9', '#e0b04a'];
     var rows = S.players.slice().sort(function (a, b) { return (b.score || 0) - (a.score || 0); });
@@ -624,26 +632,26 @@
     function av(p, i, size) {
       var col = p.color || PAL[i % PAL.length];
       if (p.photo) return '<span style="display:inline-block;width:' + size + 'cqmin;height:' + size + 'cqmin;border-radius:50%;background:url(\'' + escA(p.photo) + '\') center/cover;flex:none;box-shadow:0 0 0 .5cqmin ' + escA(col) + '"></span>';   /* v1.62 (B7) */
-      return '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + size + 'cqmin;height:' + size + 'cqmin;border-radius:50%;background:' + col + ';color:#14151a;font:700 ' + (size * 0.46) + 'cqmin sans-serif;flex:none">' + (p.name || '?').charAt(0).toUpperCase() + '</span>';
+      return '<span style="display:inline-flex;align-items:center;justify-content:center;width:' + size + 'cqmin;height:' + size + 'cqmin;border-radius:50%;background:' + escA(col) + ';color:#14151a;font:700 ' + (size * 0.46) + 'cqmin sans-serif;flex:none">' + escA((p.name || '?').charAt(0).toUpperCase()) + '</span>';   /* v1.63 (B9) */
     }
     if (S.finished) {
       var w = rows[0] || {};
       return '<div class="ie-panel" style="justify-content:center;align-items:center;gap:2.4cqmin">'
         + '<div style="font-size:10cqmin;line-height:1">👑</div>' + av(w, 0, 26)
-        + '<div style="font:700 8.5cqmin Georgia,serif;color:' + g0.accent + '">' + (w.name || '') + '</div>'
-        + (w.nick ? '<div style="font:400 4cqmin Georgia,serif;color:#b9ac8f">“' + w.nick + '”</div>' : '')
-        + '<div style="font:600 4.4cqmin sans-serif;letter-spacing:.6cqmin;color:#e8e6df;opacity:.9">WINNER · ' + (w.score || 0) + '</div></div>';
+        + '<div style="font:700 8.5cqmin Georgia,serif;color:' + escA(g0.accent) + '">' + escA(w.name || '') + '</div>'
+        + (w.nick ? '<div style="font:400 4cqmin Georgia,serif;color:#b9ac8f">“' + escA(w.nick) + '”</div>' : '')
+        + '<div style="font:600 4.4cqmin sans-serif;letter-spacing:.6cqmin;color:#e8e6df;opacity:.9">WINNER · ' + (+w.score || 0) + '</div></div>';
     }
-    return '<div class="ie-panel"><div class="ie-ph" style="color:' + g0.accent + '">SCORES</div>'
+    return '<div class="ie-panel"><div class="ie-ph" style="color:' + escA(g0.accent) + '">SCORES</div>'
       + rows.map(function (p, i) {
         var lead = (p.score === top && rows.length > 1);
         return '<div style="display:flex;align-items:center;gap:2.4cqmin;padding:1.8cqmin 0;border-bottom:1px solid rgba(255,255,255,.07)">'
           + av(p, i, 9)
-          + '<span style="flex:1;min-width:0;font:600 4.6cqmin sans-serif;color:#e8e6df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (p.name || '') + (lead ? ' <span style="font-size:3.6cqmin">👑</span>' : '') + (p.nick ? '<div style="font:400 2.8cqmin sans-serif;color:#8a8d99">“' + p.nick + '”</div>' : '') + '</span>'
-          + '<span style="font:700 8cqmin/1 ui-monospace,monospace;color:' + (lead ? g0.accent : '#e8e6df') + ';font-variant-numeric:tabular-nums">' + (p.score || 0) + '</span></div>';
+          + '<span style="flex:1;min-width:0;font:600 4.6cqmin sans-serif;color:#e8e6df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escA(p.name || '') + (lead ? ' <span style="font-size:3.6cqmin">👑</span>' : '') + (p.nick ? '<div style="font:400 2.8cqmin sans-serif;color:#8a8d99">“' + escA(p.nick) + '”</div>' : '') + '</span>'
+          + '<span style="font:700 8cqmin/1 ui-monospace,monospace;color:' + escA(lead ? g0.accent : '#e8e6df') + ';font-variant-numeric:tabular-nums">' + (+p.score || 0) + '</span></div>';
       }).join('') + '</div>';
   }
-  function mapPanel(g0) { return '<div class="ie-panel"><div class="ie-ph" style="color:' + g0.accent + '">◰ MAP</div><div style="flex:1;background:' + g0.pano + ';border-radius:6px;opacity:.55"></div></div>'; }
+  function mapPanel(g0) { return '<div class="ie-panel"><div class="ie-ph" style="color:' + escA(g0.accent) + '">◰ MAP</div><div style="flex:1;background:' + escA(g0.pano) + ';border-radius:6px;opacity:.55"></div></div>'; }   /* v1.63 (B9) */
   /* v1.04 room timer/clock — structure built once per style/bg/label; the number ticks
      locally via updateClock() from the anchor in state.timer (see renderFrame). */
   function fmtClock(T) {
