@@ -1257,7 +1257,9 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     check('G6 package.json is 1.0.5', pkg.version === '1.0.5', 'version ' + pkg.version);
     check('G6 conductor.js header reads v5.05 (community release v1.05)',
       condSrc.indexOf('Conductor backend  v5.05 (community release v1.05)') >= 0, 'header version stale');
-    check('G6 README says Version: 1.05', /\*\*Version:\s*1\.05\*\*/.test(readme), 'README version line stale');
+    /* the release-stage suffix ("(alpha)") is allowed to ride along inside the
+       bold, so this matches the number and not the whole label. */
+    check('G6 README says Version: 1.05', /\*\*Version:\s*1\.05\b/.test(readme), 'README version line stale');
     check('G6 CHANGELOG has a 1.05 entry at the top',
       /^# Changelog\s*\n\s*## 1\.05 /m.test(changelog), 'no 1.05 entry heading the changelog');
     check('G6 SECURITY.md says Version 1.05', /\*\*Version 1\.05\*\*/.test(secmd), 'SECURITY.md version stale');
@@ -1427,6 +1429,23 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     check('I6 docs/REFERENCE.md names the current conductor and repo version',
       /\*\*Doc version 1\.05\*\* · Conductor v5\.05 · Repo v1\.05/.test(docs['REFERENCE.md']),
       'REFERENCE.md header: ' + (docs['REFERENCE.md'] || '').split('\n')[2]);
+
+    /* I7: the alpha notice sets expectations before anyone spends an evening on
+       this. It is the single most important paragraph in the repo for a first-
+       time visitor, and exactly the sort of thing that gets lost in a later
+       README tidy-up. Assert it is present, prominent, and says the three
+       things that matter: alpha, not-a-product, expect-breaking-changes. */
+    check('I7 README carries the alpha notice, above the fold',
+      /ALPHA/.test(readme) && readme.indexOf('ALPHA') < 1200,
+      'the alpha notice is missing or has drifted below the fold');
+    check('I7 the alpha notice frames this as a starting point, not a product',
+      /This is not a product/i.test(readme) && /starting point/i.test(readme),
+      'the "not a product / starting point" framing is gone');
+    check('I7 the alpha notice warns about breaking changes',
+      /breaking changes/i.test(readme), 'no breaking-change warning in the README');
+    check('I7 INSTALL.md repeats the alpha warning before the install steps',
+      /alpha/i.test(docs['INSTALL.md']) && docs['INSTALL.md'].indexOf('alpha') < 1500,
+      'INSTALL.md does not flag the alpha status up front');
 
     /* ---- v2.0 (G3): the repo must ship the folders the defaults point at ---- */
     check('G3 the repo ships media/.gitkeep and .gitignore keeps the folder but not its contents',

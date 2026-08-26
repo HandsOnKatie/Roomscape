@@ -2,7 +2,45 @@
 
 **Turn a wall of TVs into an immersive room.** Roomscape drives portrait screens, smart lights, and music together as one-tap "modes" — a calm gallery at rest, an ocean floor at dinner, a haunted manor on games night.
 
-**Version: 1.05** — feature-complete first release, plus three pre-release fix passes and a full pre-publication review (see [CHANGELOG](CHANGELOG.md) and [SECURITY.md](SECURITY.md)). (Starter theme packs are still being hand-produced; the shipped `ocean-depths` pack demonstrates the format.)
+---
+
+> # 🧪 This is an ALPHA. Please read this bit.
+>
+> **This is not a product. It is the code that runs my dining room, shared as a
+> starting point.**
+>
+> I built Roomscape for one specific house — six portrait TVs, my lights, my
+> music setup, my board game shelf. I've spent a while generalising it so it
+> isn't *hopelessly* welded to my room, and it genuinely does run on other
+> layouts now. But it was never designed to be a universal app, and I'm not
+> trying to turn it into one.
+>
+> **What that means for you:**
+>
+> - **Expect rough edges.** Some things are still hard-coded to my install —
+>   two light zones called `chandelier` and `lamps`, a stray room pill, a couple
+>   of wall labels. They're all listed in [the guide](docs/GUIDE.md); none of
+>   them break anything, but you will notice them.
+> - **Expect breaking changes.** Alpha means alpha. Things will move. I'll note
+>   it in the [CHANGELOG](CHANGELOG.md), but I'm not promising a stable upgrade
+>   path yet.
+> - **This is a fork-it-and-make-it-yours project.** If a feature is 80% right
+>   for your room, change it. The code is MIT and deliberately dependency-free
+>   so you *can* pick it apart. I'd rather you built your own version than waited
+>   for me to build yours.
+> - **I can't offer support.** This is a hobby project from a one-person
+>   workshop. I'll read what comes in and fix what I can, but please don't
+>   depend on me for a reply.
+>
+> **What I'd love:** tell me what broke, what confused you, and what you built
+> with it. That's genuinely the whole reason this is public.
+>
+> If you're looking for a polished, supported, install-and-forget smart home
+> product — this isn't it, and I'd rather say so up front than waste your evening.
+
+---
+
+**Version: 1.05 (alpha)** — feature-complete for my own use, plus three pre-release fix passes and a full pre-publication review (see [CHANGELOG](CHANGELOG.md) and [SECURITY.md](SECURITY.md)). Starter theme packs are still being hand-produced; the shipped `ocean-depths` pack demonstrates the format.
 
 ---
 
@@ -79,7 +117,9 @@ Then a **🚀 Set up your room** card walks you through the rest. Full walkthrou
 
 ## Project status
 
-Roomscape was extracted from a live private installation (the original six-frame dining-room build) and generalized for other people's rooms. The engine is battle-tested; the packaging is new, and nothing has been deployed publicly yet.
+Roomscape was extracted from a live private installation (the original six-frame dining-room build) and generalized for other people's rooms.
+
+Worth separating two things: **the engine is well-used, the packaging is brand new.** It has driven my room every day for months, so the core is genuinely solid. But *running on someone else's hardware* is the part that has barely been tested — that's what the alpha label is about, and why the rough edges below are worth reading before you start.
 
 **Done and in the box:**
 

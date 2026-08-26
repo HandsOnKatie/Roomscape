@@ -2,6 +2,10 @@
 
 **Doc version 1.05** · Conductor (Docker or bare Node) + the optional Ubuntu display-PC kiosk kit.
 
+> ### 🧪 This is an alpha
+>
+> RoomScape is the code that runs one specific dining room, shared as a starting point — not a product. It works on other layouts, but that part is barely tested. Expect rough edges and breaking changes, and read [the alpha note in the README](../README.md) before you invest an evening in it.
+
 > ### ⚠️ Before you start
 >
 > RoomScape is a **LAN-only home tool**. Never port-forward it, never put it behind a public reverse proxy. If you want it from outside the house, use a VPN (WireGuard, Tailscale). It can control your lights, TVs and speakers and speak through your house — treat access to it like access to your Home Assistant. See [SECURITY.md](../SECURITY.md).
