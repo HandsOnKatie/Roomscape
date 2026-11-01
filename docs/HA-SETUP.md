@@ -88,7 +88,7 @@ The mapping lives in the settings block of the Conductor's profiles store.
 }
 ```
 
-**`lights` is a separate key from `lightZones`, and the wizard never writes it.** Wizard step 4 fills `ha.lightZones` (the named `main` / `accent` zones the Lighting lens uses). The flat `ha.lights` array above is what the Lights tab's scene cards, Moments light flashes, intro light cues and werewolf night lighting all read — and if it's empty, `POST /api/ha/lightscene` answers *"no lights configured"* and nothing happens. Set it by hand.
+**`lights` is optional.** Wizard step 4 fills `ha.lightZones` (the named `main` / `accent` zones the Lighting lens uses). The flat `ha.lights` array above is what the Lights tab's scene cards, Moments light flashes, intro light cues and werewolf night lighting read. If it's absent or empty, those use every light in `ha.lightZones` instead (since 1.06; before that they did nothing and `POST /api/ha/lightscene` answered *"no lights configured"*). Set it by hand only if you want those features to drive a different set of lights from your zones.
 
 Stop the Conductor before editing, and restart it afterwards. Doing it through the app is safer — it validates, backs up and reloads for you.
 </details>
@@ -191,7 +191,7 @@ It also **accepts commands** on these topics: `game/start`, `game/phase`, `room/
 | `"ha": false` in health | `HA_URL` or `HA_TOKEN` wrong, or the Conductor wasn't restarted after editing `.env` |
 | Connected, but no entities listed | The token was created by a user without access to those entities |
 | Frame says "no TV mapped" | That frame hasn't been mapped in wizard step 3 |
-| Light scene cards do nothing / *"no lights configured"* | `ha.lights` is empty. The wizard only fills `ha.lightZones` — add the flat `lights` array by hand (see §4) |
+| Light scene cards do nothing / *"no lights configured"* | No lights in `ha.lightZones` (wizard step 4) and no `ha.lights` list. Assign lights in step 4, or set `lights` by hand (see §4). On 1.05 or earlier, `ha.lights` must be set by hand even when zones are filled |
 | Commands lag 1–3 s | Normal for SmartThings; it's cloud-routed |
 | `🕯 Chandelier` / `🛋 Console lamps` chips toast *"Zone unavailable"* | Those two zone ids are hard-coded from the original install and don't exist on your setup. The cards render, the chips just fail. Known rough edge — the scene grid and the per-mode Lighting lens work normally. |
 

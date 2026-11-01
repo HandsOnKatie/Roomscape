@@ -1,5 +1,12 @@
 /* ===================================================================
-   RoomScape — Play & Design app (app.js)  v3.85
+   RoomScape — Play & Design app (app.js)  v3.86
+   v3.86: the Play room-row popovers (💡 Lights, 🖵 Screens) were positioned
+     with the button's VIEWPORT rect, but they are position:absolute inside the
+     scrolling .view (#vplay), which starts below the header. Unscrolled they
+     landed ~one header-height too low, on top of the room row; once Play was
+     scrolled (any install with more than a screenful of modes) they landed
+     above the visible area, so tapping 💡 Lights appeared to do nothing.
+     rsPlacePop() converts the rect into the host view's scrolled space.
    v3.85 (v1.04 — two shadowed-declaration bugs, found in the pre-publication
    review. Both were second declarations of an existing function in the SAME
    IIFE scope, so the later one silently won for every caller in the file):
@@ -3037,7 +3044,7 @@
   if (rscreensBtn) rscreensBtn.onclick = function (e) {
     var pop = $('#screensPop'); var r = e.currentTarget.getBoundingClientRect();
     pop.style.position = 'absolute';   // v2.44: the Now-bar TV dots may have switched it to fixed
-    pop.style.left = Math.max(8, r.left) + 'px'; pop.style.top = (r.top - 10) + 'px'; pop.style.transform = 'translateY(-100%)';
+    rsPlacePop(pop, r);   /* v3.86 */
     pop.classList.toggle('on');
     if (pop.classList.contains('on')) refreshHaRoom().then(renderScreenRows);
   };
@@ -3287,9 +3294,18 @@
       if (msg) msg.textContent = (j && j.ok) ? 'Applied — this wall is restarting; the frame ids flash so you can check.' : ('Failed: ' + ((j && j.error) || '?'));
     }).catch(function () { if (msg) msg.textContent = 'Failed to reach the Conductor.'; });
   }
+  /* v3.86: place a room-row popover just above its button. The popovers are
+     position:absolute inside the scrolling Play view, so the button's viewport
+     rect has to be converted into that view's (scrolled) coordinate space. */
+  function rsPlacePop(pop, r) {
+    var host = pop.closest('.view') || D.body, o = host.getBoundingClientRect();
+    pop.style.left = Math.max(8, r.left - o.left + host.scrollLeft) + 'px';
+    pop.style.top = (r.top - o.top + host.scrollTop - 10) + 'px';
+    pop.style.transform = 'translateY(-100%)';
+  }
   $('#rlights').onclick = function (e) {
     var pop = $('#lightsPop'); var r = e.currentTarget.getBoundingClientRect();
-    pop.style.left = r.left + 'px'; pop.style.top = (r.top - 10) + 'px'; pop.style.transform = 'translateY(-100%)';
+    rsPlacePop(pop, r);   /* v3.86 */
     pop.classList.toggle('on');
   };
   $('#rphotos').onclick = function () {

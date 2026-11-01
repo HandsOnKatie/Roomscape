@@ -877,12 +877,13 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
 
     // versions (rule 11: never change behaviour without changing the version)
     /* v1.04: app.js -> v3.85 (the two shadowed-declaration fixes) and fx.js ->
-       v1.63 (scoreboard escaping). engine/frame/scores were not touched. */
+       v1.63 (scoreboard escaping). engine/frame/scores were not touched.
+       Unreleased: app.js -> v3.86 (room-row popover placement). */
     check('the five frontend files carry the versions their last change earned',
-      /app\.js\)  v3\.85/.test(fjs.body) && /engine\.js\)  v0\.92/.test(fengine.body)
+      /app\.js\)  v3\.86/.test(fjs.body) && /engine\.js\)  v0\.92/.test(fengine.body)
         && /fx\.js\)  v1\.63/.test(ffx.body) && fframe.body.indexOf('frame page — v1.3') >= 0
         && fscores.body.indexOf('scoreboard — v1.1') >= 0,
-      'app ' + /app\.js\)  v3\.85/.test(fjs.body) + ', engine ' + /engine\.js\)  v0\.92/.test(fengine.body)
+      'app ' + /app\.js\)  v3\.86/.test(fjs.body) + ', engine ' + /engine\.js\)  v0\.92/.test(fengine.body)
         + ', fx ' + /fx\.js\)  v1\.63/.test(ffx.body) + ', frame ' + (fframe.body.indexOf('frame page — v1.3') >= 0)
         + ', scores ' + (fscores.body.indexOf('scoreboard — v1.1') >= 0));
   }
@@ -1260,8 +1261,19 @@ function check(name, ok, detail) { checks.push({ name, ok, detail }); console.lo
     /* the release-stage suffix ("(alpha)") is allowed to ride along inside the
        bold, so this matches the number and not the whole label. */
     check('G6 README says Version: 1.05', /\*\*Version:\s*1\.05\b/.test(readme), 'README version line stale');
-    check('G6 CHANGELOG has a 1.05 entry at the top',
-      /^# Changelog\s*\n\s*## 1\.05 /m.test(changelog), 'no 1.05 entry heading the changelog');
+    check('G6 CHANGELOG has a 1.05 entry at the top (an Unreleased section may sit above it)',
+      /^# Changelog\s*\n(\s*## Unreleased\b[\s\S]*?)?\s*## 1\.05 /m.test(changelog), 'no 1.05 entry heading the changelog');
+    /* ha.js v1.2: an empty ha.lights falls back to the zone entities; a hand-set list wins */
+    (function () {
+      var mk = require(path.join(__dirname, '..', 'conductor-lib', 'ha.js'));
+      function lightsFor(h) { return mk({ HA_URL: '', HA_TOKEN: '', DEFAULT_SETTINGS: { ha: { lightZones: { main: [], accent: [] }, lightScenes: {} } }, settings: function () { return { ha: h }; } }).haCfg().lights; }
+      var a = lightsFor({ lightZones: { main: ['light.a'], accent: ['light.b', 'light.a'] } });
+      var b = lightsFor({ lightZones: { main: ['light.a'] }, lights: ['light.x'] });
+      var c = lightsFor({});
+      check('ha.js v1.2: empty ha.lights falls back to the de-duplicated zone lights; a hand-set list wins',
+        JSON.stringify(a) === '["light.a","light.b"]' && JSON.stringify(b) === '["light.x"]' && JSON.stringify(c) === '[]',
+        JSON.stringify({ a: a, b: b, c: c }));
+    })();
     check('G6 SECURITY.md says Version 1.05', /\*\*Version 1\.05\*\*/.test(secmd), 'SECURITY.md version stale');
     check('G6 docs/ARCHITECTURE.md header reads 1.05 / conductor v5.05',
       /\*\*Doc version 1\.05\*\*/.test(archmd) && archmd.indexOf('conductor v5.05') >= 0 && archmd.indexOf('Repo: v1.05') >= 0,
