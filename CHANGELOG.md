@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`app.js` v3.86: the 💡 Lights and 🖵 Screens popovers in Play's room row
+  opened in the wrong place.** They are `position:absolute` inside the
+  scrolling Play view, but were placed with the button's viewport rectangle.
+  Unscrolled, they landed about one header-height too low, over the room row;
+  with more than a screenful of modes (any install with a theme pack or two),
+  they landed above the visible area, so tapping 💡 Lights appeared to do
+  nothing. The rectangle is now converted into the view's scrolled
+  coordinates.
+- **`conductor-lib/ha.js` v1.2: the room-row/Lights-tab scene chips, Moments
+  light flashes, intro light cues and werewolf night lighting did nothing on a
+  fresh install.** They all read the flat `ha.lights` list, which the setup
+  wizard never writes (step 4 fills `ha.lightZones` only), so a new user got
+  *"no lights configured"* with no hint why. When `ha.lights` is empty,
+  `haCfg()` now falls back to every entity in `ha.lightZones`. A non-empty,
+  hand-set `ha.lights` still wins, so existing installs behave exactly as
+  before. Docs (HA-SETUP §4 and troubleshooting, GUIDE wizard table) updated.
+
 ## 1.05 — 2026-08-25 (conductor v5.05)
 
 **The two remaining High findings, and the repo plumbing for a public release.**
