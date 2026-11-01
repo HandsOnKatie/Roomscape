@@ -1,5 +1,11 @@
 /* ===================================================================
-   conductor-lib/ha.js  v1.1
+   conductor-lib/ha.js  v1.2
+   v1.2: haCfg().lights falls back to every entity in ha.lightZones when the
+        flat ha.lights list is empty. The setup wizard only ever writes
+        lightZones, so on a fresh install the Lights-tab / room-row scene
+        chips answered "no lights configured" and Moments flashes, intro light
+        cues and werewolf night lighting silently did nothing. A hand-set,
+        non-empty ha.lights still wins, so existing installs are unchanged.
    v1.1 (RS-SEC v1.01, F13): haFetch caps the buffered response (4 MB) and
         adds an absolute 20 s deadline on top of the inactivity timeout.
    Extracted verbatim from conductor.js v2.62 (RoomScape Conductor v3.62 split).
@@ -26,7 +32,9 @@ module.exports = function (ctx) {
      ('theme:<pack>' payloads) — the RS-THEMES block injects the getter into ctx
      AFTER construction, so guard for it and read at call time. They merge on
      top of defaults + user scenes and are never persisted. */
-  function haCfg() { const h = ctx.settings().ha || {}; return { tvs: h.tvs || {}, lights: h.lights || [], zones: h.lightZones || DEFAULT_SETTINGS.ha.lightZones, lightScenes: Object.assign({}, DEFAULT_SETTINGS.ha.lightScenes, h.lightScenes || {}, (typeof ctx.themeLightScenes === 'function' ? ctx.themeLightScenes() : {})) }; }
+  /* v1.2: de-duplicated union of every zone's entities, in zone order */
+  function zoneLights(z) { const out = []; Object.keys(z || {}).forEach(function (k) { (Array.isArray(z[k]) ? z[k] : []).forEach(function (en) { if (en && out.indexOf(en) < 0) out.push(en); }); }); return out; }
+  function haCfg() { const h = ctx.settings().ha || {}; const zones = h.lightZones || DEFAULT_SETTINGS.ha.lightZones; return { tvs: h.tvs || {}, lights: (Array.isArray(h.lights) && h.lights.length) ? h.lights : zoneLights(zones), zones: zones, lightScenes: Object.assign({}, DEFAULT_SETTINGS.ha.lightScenes, h.lightScenes || {}, (typeof ctx.themeLightScenes === 'function' ? ctx.themeLightScenes() : {})) }; }
 
   /* RS-SEC v1.01 (F13): the response used to be accumulated into an unbounded
      string, and `timeout: 8000` is an INACTIVITY timeout — a peer that dribbles
